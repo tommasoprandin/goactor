@@ -101,7 +101,7 @@ registers both the argument and message types with the wire codec.
 
 The code of every actor is replicated in every execution node (the binary is the same), so every node can construct every behavior, which is what allows an actor to be placed on any node.
 
-The, to spawn an actor on a remote node it is sufficient to transmit a behavior name and its serialized arguments; **code is never transmitted**, since Go does not support serialization of code (excluding plugins).
+Then, to spawn an actor on a remote node it is sufficient to transmit a behavior name and its serialized arguments; **code is never transmitted**, since Go does not support serialization of code (excluding plugins).
 
 Behaviors are declared in Go code only. The configuration file contains no actor or behavior information.
 
@@ -489,7 +489,7 @@ Nodes do not wait for the full cluster to become available before starting.
 ```
 goactor/
   actor.go            Actor[T], ActorContext[T], Ref[T]
-  id.go               ActorID, NodeID, epoch file
+  id.go               ActorID, NodeID re-exports, sequence allocator, epoch file
   system.go           node runtime, spawn, dispatch, panic recovery
   registry.go         behavior name -> constructor
   mailbox/            two-queue unbounded mailbox
@@ -499,6 +499,7 @@ goactor/
   names/              sharded name registry, shard rebuild
   placement/          power-of-two-choices selection
   config/             YAML parsing and validation
+  internal/ident/     ActorID, NodeID definitions, shared by every subpackage
 cmd/mandelbrot/       demo application
 ```
 
@@ -506,4 +507,4 @@ cmd/mandelbrot/       demo application
 
 - `github.com/hashicorp/memberlist` — SWIM membership and failure detection
 - `google.golang.org/grpc` — inter-node transport
-- `gopkg.in/yaml.v3` — configuration
+- `go.yaml.in/yaml/v3` — configuration
