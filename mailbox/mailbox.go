@@ -1,5 +1,5 @@
 // Package mailbox implements an unbounded multi-producer, single-consumer queue.
-// Implementation uses a double buffer splitting the "public" inbound from the "private
+// Implementation uses a double buffer splitting the "public" inbound from the "private"
 // goroutine-owned buffer. Once the internal is empty, the slices are swapped.
 package mailbox
 
@@ -58,18 +58,21 @@ func (m *Mailbox[T]) Next(stop <-chan struct{}) (T, bool) {
 			m.depth.Add(-1)
 			return v, true
 		}
+		// if inner is empty swap inner and outer
 		clear(m.inner)
 		m.mu.Lock()
 		m.inner, m.outer = m.outer, m.inner[:0]
 		closed := m.closed
 		m.mu.Unlock()
 		m.ipos = 0
+		// there is something on the new inner, read it
 		if len(m.inner) > 0 {
 			continue
 		}
 		if closed {
 			return zero, false
 		}
+		// if mailbox empty block on either a notification or stop
 		select {
 		case <-m.notify:
 		case <-stop:
