@@ -1,4 +1,4 @@
-// Package config loads the cluster configuration. Every node is supposed to 
+// Package config loads the cluster configuration. Every node is supposed to
 // load an identical file.
 package config
 

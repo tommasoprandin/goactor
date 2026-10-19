@@ -95,9 +95,10 @@ func init() {
 }
 ```
 
-The constructor's argument type is part of the behavior's contract: `Spawn` and `SpawnNamed`
-type-check their `args` against it and fail with `ErrTypeMismatch` on disagreement, and `Register`
-registers both the argument and message types with the wire codec.
+The constructor's argument and message types are part of the behavior's contract: `Spawn` and
+`SpawnNamed` type-check their `args` against the argument type and their type parameter `T` against
+the message type, and fail with `ErrTypeMismatch` on disagreement. `Register` registers both types
+with the wire codec.
 
 The code of every actor is replicated in every execution node (the binary is the same), so every node can construct every behavior, which is what allows an actor to be placed on any node.
 
@@ -194,8 +195,12 @@ type Actor[T any] interface {
 
 `Start` runs once, before the first message is dequeued. It is the first point at which `ActorContext[T]` exists and where any kind of initialization happens, so for instance opening file handles or spawning childrens. Initialisation that cannot succeed must panic: the actor is then reported dead, and the first `Send` to its reference returns `ErrActorDead`. `Spawn` itself does not wait for `Start` and so never reports the failure.
 
-`Stop` runs once for every actor whose `Start` returned normally — on graceful termination and on the panic path alike. `err` is `nil` when the actor stopped normally and wraps the recovered value when it panicked. An actor that panics inside `Start` never receives `Stop`, as its state is only partly built.
+`Stop` runs once for every actor whose `Start` returned normally — on shutdown and on the panic path alike. `err` is `nil` when the actor stopped normally and wraps the recovered value when it panicked. An actor that panics inside `Start` never receives `Stop`, as its state is only partly built.
 A panic inside `Stop` is recovered and logged.
+
+An actor cannot terminate itself: it lives until it panics or its node goes away. `Shutdown` stops
+every actor of the node, waits a bounded time for them to exit, and makes any later `Spawn` on that
+node fail with `ErrNodeDown`.
 
 ### API
 
@@ -237,7 +242,9 @@ The boolean reports whether this call won.
 `Request` blocks the calling actor's goroutine until a reply arrives or the timeout expires.
 Request cycles between actors deadlock; use `Send` with `After` for scatter-gather.
 
-`Ref[T]` is serializable and may be embedded in messages as a reply address.
+`Ref[T]` is serializable and may be embedded in messages as a reply address. Besides the target's
+`ActorID` it holds the local `System` it sends through, since `Send` takes no context; only the
+`ActorID` is serialised.
 
 ### Bootstrapping an application
 
@@ -431,8 +438,9 @@ being read from a view up to a refresh interval stale; see
 The framework detects and reports failures. It does not act on them.
 
 An actor is considered dead when it panics (the panic is recovered and the actor terminated) or when
-`Receive` returns permanently. A panicking actor's `Stop` is invoked with the recovered value before
-its mailbox is discarded; an actor that panics in `Start` is dead at once and `Stop` is not called. Fatal Go runtime errors — concurrent map writes, stack exhaustion,
+its node shuts down; actors never terminate themselves. A panicking actor's `Stop` is invoked with
+the recovered value before its mailbox is discarded; an actor that panics in `Start` is dead at once
+and `Stop` is not called. Fatal Go runtime errors — concurrent map writes, stack exhaustion,
 all-goroutines-asleep — terminate the entire process and are handled as a node failure.
 
 Node failures are detected by SWIM, after the detection window described in
@@ -446,11 +454,11 @@ Sentinel errors returned by the API:
 | Error | Meaning | Cost |
 | --- | --- | --- |
 | `ErrActorDead` | Destination node is up; the actor is gone or the epoch is stale | one round trip |
-| `ErrNodeDown` | Destination node is not alive in the local membership view | none, fails locally |
+| `ErrNodeDown` | Destination node is not alive in the local membership view, or `Spawn` after the local `Shutdown` | none, fails locally |
 | `ErrNoRoute` | No transport stream to the destination node | none, fails locally |
 | `ErrUnknownNode` | Destination `NodeID` is absent from the configuration | none, fails locally |
 | `ErrNameNotFound` | Lookup of an unregistered or released name | one registry call |
-| `ErrTypeMismatch` | `Lookup[T]` found a different message type, or `Spawn` args do not match the behavior | one registry call, or none |
+| `ErrTypeMismatch` | `Lookup[T]` found a different message type, or `Spawn` args or `T` do not match the behavior | one registry call, or none |
 | `ErrRegistryUnavailable` | The shard owner for this name is not reachable | one registry call |
 | `ErrRegistryRebuilding` | The shard owner is reconstructing its shard; retry | one registry call |
 | `ErrUnknownBehavior` | Target node has no behavior registered under that name | one round trip |
@@ -501,6 +509,7 @@ goactor/
   config/             YAML parsing and validation
   internal/ident/     ActorID, NodeID definitions, shared by every subpackage
 cmd/mandelbrot/       demo application
+examples/             minimal programs showing library usage (pingpong_local: single node)
 ```
 
 ## Dependencies
