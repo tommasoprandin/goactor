@@ -12,6 +12,7 @@ var (
 	ErrTypeMismatch    = errors.New("goactor: type mismatch")
 	ErrUnknownBehavior = errors.New("goactor: unknown behavior")
 	ErrNodeDown        = errors.New("goactor: node down")
+	ErrTimeout         = errors.New("goactor: timeout")
 
 	errNotImplemented = errors.New("goactor: not implemented")
 )
@@ -37,12 +38,13 @@ type Context interface {
 // ActorContext is an actor's handle on the runtime, passed to its hooks. It is valid only on the
 // actor's own goroutine.
 type ActorContext[T any] struct {
-	sys   *System
-	self  ActorID
-	actor Actor[T]
-	mb    *mailbox.Mailbox[T]
-	quit  chan struct{}
-	once  sync.Once
+	sys    *System
+	self   ActorID
+	actor  Actor[T]
+	mb     *mailbox.Mailbox[T]
+	quit   chan struct{}
+	once   sync.Once
+	timers timerSet
 }
 
 func (c *ActorContext[T]) Self() ActorID { return c.self }

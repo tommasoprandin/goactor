@@ -27,14 +27,19 @@ type System struct {
 
 	mu      sync.RWMutex
 	actors  map[ActorID]actorHandle
+	pending map[ActorID]inbox
 	stopped bool
 	wg      sync.WaitGroup
 }
 
 // Need this because go can't store generic types with different
 // instatiations together
-type actorHandle interface {
+type inbox interface {
 	enqueue(msg any) error
+}
+
+type actorHandle interface {
+	inbox
 	stop()
 	depth() int64
 }
@@ -48,7 +53,12 @@ func Start(cfg *config.Config, id NodeID) (*System, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &System{node: id, epoch: epoch, actors: make(map[ActorID]actorHandle)}, nil
+	return &System{
+		node:    id,
+		epoch:   epoch,
+		actors:  make(map[ActorID]actorHandle),
+		pending: make(map[ActorID]inbox),
+	}, nil
 }
 
 // Root returns a Context for use outside any actor.
@@ -81,22 +91,33 @@ func (s *System) Shutdown() {
 	}
 }
 
-func (s *System) lookup(id ActorID) (actorHandle, error) {
+func (s *System) lookup(id ActorID) (inbox, error) {
 	if id.Node != s.node {
 		return nil, errNotImplemented
 	}
 	s.mu.RLock()
-	h, ok := s.actors[id]
-	s.mu.RUnlock()
-	if !ok {
-		return nil, ErrActorDead
+	defer s.mu.RUnlock()
+	if h, ok := s.actors[id]; ok {
+		return h, nil
 	}
-	return h, nil
+	if h, ok := s.pending[id]; ok {
+		return h, nil
+	}
+	return nil, ErrActorDead
+}
+
+func (s *System) addPending(h inbox) ActorID {
+	id := ActorID{Node: s.node, Epoch: s.epoch, Seq: s.seq.Next()}
+	s.mu.Lock()
+	s.pending[id] = h
+	s.mu.Unlock()
+	return id
 }
 
 func (s *System) remove(id ActorID) {
 	s.mu.Lock()
 	delete(s.actors, id)
+	delete(s.pending, id)
 	s.mu.Unlock()
 }
 
@@ -191,6 +212,7 @@ func (c *ActorContext[T]) run() {
 func (c *ActorContext[T]) exit() {
 	c.sys.remove(c.self)
 	c.mb.Close()
+	c.timers.close()
 }
 
 func (c *ActorContext[T]) start() (err error) {

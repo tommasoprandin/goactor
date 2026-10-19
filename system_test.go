@@ -20,7 +20,7 @@ func TestMain(m *testing.M) {
 }
 
 type hooks struct {
-	start   func()
+	start   func(*ActorContext[int])
 	receive func(int)
 	stop    func(error)
 }
@@ -34,9 +34,9 @@ func newProbe(h hooks) Actor[int] {
 	return &probe{h}
 }
 
-func (p *probe) Start(*ActorContext[int]) {
+func (p *probe) Start(c *ActorContext[int]) {
 	if p.h.start != nil {
-		p.h.start()
+		p.h.start(c)
 	}
 }
 
@@ -104,7 +104,7 @@ func TestLifecycle(t *testing.T) {
 		s := newSystem(t)
 		var got []string
 		r := spawnProbe(t, s, hooks{
-			start:   func() { got = append(got, "start") },
+			start:   func(*ActorContext[int]) { got = append(got, "start") },
 			receive: func(i int) { got = append(got, fmt.Sprint(i)) },
 			stop:    func(err error) { got = append(got, fmt.Sprint("stop ", err)) },
 		})
@@ -128,7 +128,7 @@ func TestDepth(t *testing.T) {
 	s := newSystem(t)
 	gate := make(chan struct{})
 	defer close(gate)
-	r := spawnProbe(t, s, hooks{start: func() { <-gate }})
+	r := spawnProbe(t, s, hooks{start: func(*ActorContext[int]) { <-gate }})
 	for i := range 3 {
 		r.Send(i)
 	}
@@ -136,7 +136,7 @@ func TestDepth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if d := h.depth(); d != 3 {
+	if d := h.(actorHandle).depth(); d != 3 {
 		t.Fatalf("depth %d, want 3", d)
 	}
 }
@@ -206,7 +206,7 @@ func TestPanicInStart(t *testing.T) {
 		s := newSystem(t)
 		stopped := false
 		r := spawnProbe(t, s, hooks{
-			start: func() { panic("boom") },
+			start: func(*ActorContext[int]) { panic("boom") },
 			stop:  func(error) { stopped = true },
 		})
 		synctest.Wait()

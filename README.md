@@ -240,7 +240,9 @@ The boolean reports whether this call won.
 `Lookup[T]` verifies that the registered actor accepts messages of type `T` and fails otherwise.
 
 `Request` blocks the calling actor's goroutine until a reply arrives or the timeout expires.
-Request cycles between actors deadlock; use `Send` with `After` for scatter-gather.
+Request cycles between actors deadlock; use `Send` with `After` for scatter-gather. The request
+type `T` must be a struct with a field `ReplyTo Ref[R]`, which `Request` sets to a single-use reply
+address; the responder replies with `ReplyTo.Send`.
 
 `Ref[T]` is serializable and may be embedded in messages as a reply address. Besides the target's
 `ActorID` it holds the local `System` it sends through, since `Send` takes no context; only the
@@ -458,7 +460,7 @@ Sentinel errors returned by the API:
 | `ErrNoRoute` | No transport stream to the destination node | none, fails locally |
 | `ErrUnknownNode` | Destination `NodeID` is absent from the configuration | none, fails locally |
 | `ErrNameNotFound` | Lookup of an unregistered or released name | one registry call |
-| `ErrTypeMismatch` | `Lookup[T]` found a different message type, or `Spawn` args or `T` do not match the behavior | one registry call, or none |
+| `ErrTypeMismatch` | `Lookup[T]` found a different message type, `Spawn` args or `T` do not match the behavior, or a `Request` type lacks `ReplyTo Ref[R]` | one registry call, or none |
 | `ErrRegistryUnavailable` | The shard owner for this name is not reachable | one registry call |
 | `ErrRegistryRebuilding` | The shard owner is reconstructing its shard; retry | one registry call |
 | `ErrUnknownBehavior` | Target node has no behavior registered under that name | one round trip |
