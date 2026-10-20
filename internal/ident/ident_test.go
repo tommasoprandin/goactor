@@ -42,7 +42,7 @@ func TestActorIDRejectsMalformed(t *testing.T) {
 		}
 	}
 	var id ActorID
-	if err := id.UnmarshalBinary(make([]byte, actorIDLen-1)); err == nil {
+	if err := id.UnmarshalBinary(make([]byte, ActorIDLen-1)); err == nil {
 		t.Error("short binary: no error")
 	}
 }

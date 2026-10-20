@@ -4,17 +4,21 @@ import (
 	"errors"
 	"sync"
 
+	"github.com/tommasoprandin/goactor/codec"
 	"github.com/tommasoprandin/goactor/mailbox"
 )
 
 var (
-	ErrActorDead       = errors.New("goactor: actor dead")
-	ErrTypeMismatch    = errors.New("goactor: type mismatch")
-	ErrUnknownBehavior = errors.New("goactor: unknown behavior")
-	ErrNodeDown        = errors.New("goactor: node down")
-	ErrTimeout         = errors.New("goactor: timeout")
+	ErrActorDead        = errors.New("goactor: actor dead")
+	ErrTypeMismatch     = errors.New("goactor: type mismatch")
+	ErrUnknownBehavior  = errors.New("goactor: unknown behavior")
+	ErrNodeDown         = errors.New("goactor: node down")
+	ErrTimeout          = errors.New("goactor: timeout")
+	ErrUnknownType      = codec.ErrUnknownType
+	ErrSystemNotStarted = errors.New("goactor: system not started")
 
 	errNotImplemented = errors.New("goactor: not implemented")
+	errRunning        = errors.New("goactor: a system is already running in this process")
 )
 
 // Actor is a behaviour receiving messages of type T. The runtime calls every method on the actor's
@@ -49,7 +53,7 @@ type ActorContext[T any] struct {
 
 func (c *ActorContext[T]) Self() ActorID { return c.self }
 
-func (c *ActorContext[T]) SelfRef() Ref[T] { return Ref[T]{id: c.self, sys: c.sys} }
+func (c *ActorContext[T]) SelfRef() Ref[T] { return Ref[T]{id: c.self} }
 
 func (c *ActorContext[T]) system() *System { return c.sys }
 
@@ -59,22 +63,32 @@ func (rootContext) Self() ActorID { return ActorID{} }
 
 func (c rootContext) system() *System { return c.sys }
 
-// Ref addresses an actor receiving messages of type T.
+// Ref addresses an actor receiving messages of type T. It sends through the System running in
+// this process.
 type Ref[T any] struct {
-	id  ActorID
-	sys *System
+	id ActorID
 }
 
 func (r Ref[T]) ID() ActorID { return r.id }
 
-// Send enqueues msg without blocking. A nil error means the message was accepted, not processed.
+// Send serialises msg and enqueues the copy without blocking. A nil error means the message was
+// accepted, not processed.
 func (r Ref[T]) Send(msg T) error {
-	if r.sys == nil {
+	if r.id.IsZero() {
 		return ErrActorDead
 	}
-	h, err := r.sys.lookup(r.id)
+	s := current.Load()
+	if s == nil {
+		return ErrSystemNotStarted
+	}
+	name, payload, err := codec.Marshal(msg)
 	if err != nil {
 		return err
 	}
-	return h.enqueue(msg)
+	return s.deliver(&codec.Envelope{To: r.id, TypeName: name, Payload: payload})
 }
+
+// GobEncode writes only the ActorID.
+func (r Ref[T]) GobEncode() ([]byte, error) { return r.id.MarshalBinary() }
+
+func (r *Ref[T]) GobDecode(b []byte) error { return r.id.UnmarshalBinary(b) }

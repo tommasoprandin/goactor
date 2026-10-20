@@ -52,6 +52,10 @@ across a statically configured set of execution nodes.
 One process running the framework. Each node manages transport to every other node, actor
 registration, local actor scheduling, message routing, and its shard of the name registry.
 
+A process hosts exactly one node: it runs at most one `System` at a time, and `goactor.Start` fails
+while another is running. A multi-node cluster is therefore always several processes, on one host
+or many.
+
 All nodes run the **same binary**. The node set is fixed at startup by a configuration file
 identical on every node; a node's own identity is supplied by a command-line flag.
 
@@ -244,9 +248,10 @@ Request cycles between actors deadlock; use `Send` with `After` for scatter-gath
 type `T` must be a struct with a field `ReplyTo Ref[R]`, which `Request` sets to a single-use reply
 address; the responder replies with `ReplyTo.Send`.
 
-`Ref[T]` is serializable and may be embedded in messages as a reply address. Besides the target's
-`ActorID` it holds the local `System` it sends through, since `Send` takes no context; only the
-`ActorID` is serialised.
+`Ref[T]` is serializable and may be carried in a message field as a reply address. It holds only
+the target's `ActorID`, which is all that is serialised; `Send` takes no context and goes through
+the `System` running in the process. Used with no `System` running, it fails with
+`ErrSystemNotStarted`.
 
 ### Bootstrapping an application
 
@@ -301,9 +306,20 @@ Guarantees:
   and behaviour does not change with placement.
 
 Messages are encoded with `encoding/gob` against a type-name registry. `Register` registers a
-behavior's argument and message types; a type used only as a `Request` reply is registered with
-`RegisterMessage`. Message types must be encodable: channels, functions, and unexported fields are
-not transmissible.
+behavior's argument and message types under their `pkgpath.TypeName`; a type used only as a
+`Request` reply is registered with `RegisterMessage`. Each message is encoded on its own, so every
+payload is self-describing and independent of any stream state. Sending an unregistered type fails
+with `ErrUnknownType`.
+
+Message types must be encodable. Unexported fields are not transmitted. Channel and function fields
+fail at encode with an error naming the field, as does a Go-embedded field whose type has its own
+encoder (`Ref[T]`, `ActorID`, `time.Time`): gob would promote that encoder to the whole message and
+silently drop every other field. Carry such values in named fields.
+
+Local and remote sends share one path. The sender encodes the message into an envelope; a local
+envelope is handed straight to the same delivery routine the transport calls for inbound traffic,
+which looks up the target, decodes the payload and enqueues it. Only the envelope header's byte
+framing is skipped locally, and it carries no user data.
 
 ## Membership and liveness
 
@@ -457,7 +473,7 @@ Sentinel errors returned by the API:
 | --- | --- | --- |
 | `ErrActorDead` | Destination node is up; the actor is gone or the epoch is stale | one round trip |
 | `ErrNodeDown` | Destination node is not alive in the local membership view, or `Spawn` after the local `Shutdown` | none, fails locally |
-| `ErrNoRoute` | No transport stream to the destination node | none, fails locally |
+| `ErrNoRoute` | No transport connection to the destination node | none, fails locally |
 | `ErrUnknownNode` | Destination `NodeID` is absent from the configuration | none, fails locally |
 | `ErrNameNotFound` | Lookup of an unregistered or released name | one registry call |
 | `ErrTypeMismatch` | `Lookup[T]` found a different message type, `Spawn` args or `T` do not match the behavior, or a `Request` type lacks `ReplyTo Ref[R]` | one registry call, or none |
@@ -466,7 +482,7 @@ Sentinel errors returned by the API:
 | `ErrUnknownBehavior` | Target node has no behavior registered under that name | one round trip |
 | `ErrUnknownType` | Message type is not registered with the codec | none, fails locally |
 | `ErrNoLiveNodes` | Automatic placement found no alive node | none, fails locally |
-| `ErrSystemNotStarted` | A deserialised `Ref[T]` was used before `goactor.Start` | none, fails locally |
+| `ErrSystemNotStarted` | A `Ref[T]` was used with no `System` running in this process | none, fails locally |
 | `ErrTimeout` | `Request` deadline expired | the timeout |
 
 `ErrUnknownType` fails at local encode. The receiver-side check that answers with a `Nack` carrying
@@ -480,13 +496,27 @@ Consequences applications must handle:
 
 ## Transport
 
-gRPC over HTTP/2, one long-lived bidirectional stream per ordered node pair, with message batching.
-Connections form a full mesh and are re-established automatically. Traffic is plaintext; transport
-security is out of scope.
+gRPC over HTTP/2. Connections form a full mesh and are re-established automatically. Traffic is
+plaintext; transport security is out of scope. Each connection carries two kinds of traffic:
+
+- **Actor messages** travel as envelopes on one long-lived bidirectional stream per ordered node
+  pair, with batching. The stream is what provides FIFO per pair, and batching spreads the per-call
+  cost of gRPC over messages that are small, numerous and one-way. Payloads are opaque to gRPC:
+  message types belong to the application, so no code generated with the framework can name them.
+- **Framework requests** — remote spawn, registry operations, shard rebuild — are typed unary RPCs
+  generated from protobuf. They are genuinely request/response and need no ordering against actor
+  traffic, so correlation, deadlines and cancellation come from gRPC rather than from the
+  framework, and they never queue behind a batch of actor messages. Behaviour arguments in a spawn
+  request stay gob-encoded, for the same reason as message payloads.
+
+Errors a peer reports travel in the response body and map onto the sentinel errors of the
+[failure model](#failure-model); gRPC status carries transport failures only. No call is retried,
+so every request reaches its peer at most once.
 
 ## Startup
 
-1. Load the configuration and resolve the local node identity from `-id`.
+1. Load the configuration and resolve the local node identity from `-id`. Fail if this process
+   already runs a `System`.
 2. Read and increment the epoch counter in the data directory.
 3. Open transport streams to all configured peers.
 4. Join the SWIM cluster, and begin publishing liveness and load statistics.
@@ -503,13 +533,14 @@ goactor/
   system.go           node runtime, spawn, dispatch, panic recovery
   registry.go         behavior name -> constructor
   mailbox/            two-queue unbounded mailbox
-  codec/              gob type registry, Ref[T] encoding, envelopes
-  transport/          gRPC service, per-pair bidirectional streams
+  codec/              gob type registry, envelopes
+  transport/          gRPC connections, per-pair message streams
   cluster/            memberlist integration, epochs, load gossip
   names/              sharded name registry, shard rebuild
   placement/          power-of-two-choices selection
   config/             YAML parsing and validation
   internal/ident/     ActorID, NodeID definitions, shared by every subpackage
+  internal/wire/      protobuf definitions of the framework RPCs
 cmd/mandelbrot/       demo application
 examples/             minimal programs showing library usage (pingpong_local: single node)
 ```
@@ -518,4 +549,5 @@ examples/             minimal programs showing library usage (pingpong_local: si
 
 - `github.com/hashicorp/memberlist` — SWIM membership and failure detection
 - `google.golang.org/grpc` — inter-node transport
+- `google.golang.org/protobuf` — generated framework RPC messages
 - `go.yaml.in/yaml/v3` — configuration

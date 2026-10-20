@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+
+	"github.com/tommasoprandin/goactor/codec"
 )
 
 type behaviorEntry struct {
@@ -17,9 +19,11 @@ var behaviors = struct {
 	m map[string]behaviorEntry
 }{m: make(map[string]behaviorEntry)}
 
-// Register binds a behaviour name to its constructor. Call it from init; registering a name twice
-// panics.
+// Register binds a behaviour name to its constructor and registers A and T with the wire codec.
+// Call it from init; registering a name twice panics.
 func Register[A, T any](name string, ctor func(args A) Actor[T]) {
+	codec.RegisterType[A]("")
+	codec.RegisterType[T]("")
 	argType := reflect.TypeFor[A]()
 	e := behaviorEntry{
 		argType: argType,
@@ -40,6 +44,10 @@ func Register[A, T any](name string, ctor func(args A) Actor[T]) {
 	}
 	behaviors.m[name] = e
 }
+
+// RegisterMessage registers T with the wire codec under name. It is needed only for types that no
+// behaviour takes or receives, such as Request replies.
+func RegisterMessage[T any](name string) { codec.RegisterType[T](name) }
 
 func lookupBehavior(name string) (behaviorEntry, bool) {
 	behaviors.RLock()

@@ -71,7 +71,7 @@ func TestRequestTimeout(t *testing.T) {
 func TestRequestErrors(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s := newSystem(t)
-		dead := Ref[query]{id: ActorID{Node: 1, Epoch: s.epoch, Seq: 1 << 40}, sys: s}
+		dead := Ref[query]{id: ActorID{Node: 1, Epoch: s.epoch, Seq: 1 << 40}}
 		t0 := time.Now()
 		if _, err := Request[query, int](s.Root(), dead, query{}, time.Hour); !errors.Is(err, ErrActorDead) || time.Since(t0) != 0 {
 			t.Fatalf("dead actor: %v after %v", err, time.Since(t0))

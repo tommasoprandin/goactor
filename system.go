@@ -8,8 +8,10 @@ import (
 	"runtime/debug"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/tommasoprandin/goactor/codec"
 	"github.com/tommasoprandin/goactor/config"
 	"github.com/tommasoprandin/goactor/mailbox"
 )
@@ -44,8 +46,14 @@ type actorHandle interface {
 	depth() int64
 }
 
-// Start runs node id of cfg under a fresh epoch taken from cfg.DataDir.
+var current atomic.Pointer[System]
+
+// Start runs node id of cfg under a fresh epoch taken from cfg.DataDir. A process runs at most one
+// System at a time.
 func Start(cfg *config.Config, id NodeID) (*System, error) {
+	if current.Load() != nil {
+		return nil, errRunning
+	}
 	if _, err := cfg.Node(id); err != nil {
 		return nil, err
 	}
@@ -53,12 +61,16 @@ func Start(cfg *config.Config, id NodeID) (*System, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &System{
+	s := &System{
 		node:    id,
 		epoch:   epoch,
 		actors:  make(map[ActorID]actorHandle),
 		pending: make(map[ActorID]inbox),
-	}, nil
+	}
+	if !current.CompareAndSwap(nil, s) {
+		return nil, errRunning
+	}
+	return s, nil
 }
 
 // Root returns a Context for use outside any actor.
@@ -89,6 +101,19 @@ func (s *System) Shutdown() {
 	case <-time.After(shutdownTimeout):
 		slog.Warn("goactor: shutdown timed out", "node", s.node)
 	}
+	current.CompareAndSwap(s, nil)
+}
+
+func (s *System) deliver(e *codec.Envelope) error {
+	h, err := s.lookup(e.To)
+	if err != nil {
+		return err
+	}
+	msg, err := codec.Unmarshal(e.TypeName, e.Payload)
+	if err != nil {
+		return err
+	}
+	return h.enqueue(msg)
 }
 
 func (s *System) lookup(id ActorID) (inbox, error) {
@@ -154,7 +179,7 @@ func Spawn[T any](ctx Context, behavior string, args any, opts ...SpawnOpt) (Ref
 	if err != nil {
 		return Ref[T]{}, err
 	}
-	return Ref[T]{id: id, sys: s}, nil
+	return Ref[T]{id: id}, nil
 }
 
 // Registered before the goroutine starts: Start may send to itself, and a panicking Start must not

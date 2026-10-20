@@ -20,7 +20,7 @@ type ActorID struct {
 }
 
 // in bytes
-const actorIDLen = 14
+const ActorIDLen = 14
 
 // String formats the id as node.epoch.seq.
 func (a ActorID) String() string {
@@ -46,15 +46,18 @@ func ParseActorID(s string) (ActorID, error) {
 
 // MarshalBinary encodes the id as 14 big-endian bytes: node, epoch, seq.
 func (a ActorID) MarshalBinary() ([]byte, error) {
-	b := make([]byte, 0, actorIDLen)
+	return a.AppendBinary(make([]byte, 0, ActorIDLen))
+}
+
+func (a ActorID) AppendBinary(b []byte) ([]byte, error) {
 	b = binary.BigEndian.AppendUint16(b, uint16(a.Node))
 	b = binary.BigEndian.AppendUint32(b, a.Epoch)
 	return binary.BigEndian.AppendUint64(b, a.Seq), nil
 }
 
 func (a *ActorID) UnmarshalBinary(b []byte) error {
-	if len(b) != actorIDLen {
-		return fmt.Errorf("goactor: actor id is %d bytes, want %d", len(b), actorIDLen)
+	if len(b) != ActorIDLen {
+		return fmt.Errorf("goactor: actor id is %d bytes, want %d", len(b), ActorIDLen)
 	}
 	a.Node = NodeID(binary.BigEndian.Uint16(b))
 	a.Epoch = binary.BigEndian.Uint32(b[2:])

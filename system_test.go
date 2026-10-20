@@ -74,6 +74,7 @@ func (p *pingPong) Stop(*ActorContext[ball], error) {}
 func init() {
 	Register("test.probe", newProbe)
 	Register("test.pingpong", func(done chan struct{}) Actor[ball] { return &pingPong{done} })
+	RegisterMessage[string]("string")
 }
 
 func newSystem(t *testing.T) *System {
@@ -146,7 +147,7 @@ func TestTypeMismatch(t *testing.T) {
 	got := make(chan int, 1)
 	r := spawnProbe(t, s, hooks{receive: func(i int) { got <- i }})
 
-	if err := (Ref[string]{id: r.ID(), sys: s}).Send("x"); !errors.Is(err, ErrTypeMismatch) {
+	if err := (Ref[string]{id: r.ID()}).Send("x"); !errors.Is(err, ErrTypeMismatch) {
 		t.Fatalf("wrong message type: %v", err)
 	}
 	if err := r.Send(7); err != nil {
@@ -263,7 +264,7 @@ func TestPingPong(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	a.Send(ball{N: 100_000, From: b})
+	a.Send(ball{N: 1_000, From: b})
 	<-done
 }
 

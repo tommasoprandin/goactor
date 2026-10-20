@@ -24,7 +24,7 @@ func Request[T, R any](ctx Context, r Ref[T], msg T, timeout time.Duration) (R, 
 	id := s.addPending(slot)
 	defer s.remove(id)
 	// Need to write into msg the reply address
-	reflect.ValueOf(&msg).Elem().Field(field).Set(reflect.ValueOf(Ref[R]{id: id, sys: s}))
+	reflect.ValueOf(&msg).Elem().Field(field).Set(reflect.ValueOf(Ref[R]{id: id}))
 	if err := r.Send(msg); err != nil {
 		return zero, err
 	}
