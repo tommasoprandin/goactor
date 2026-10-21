@@ -1,0 +1,11 @@
+syntax = "proto3";
+
+package goactor.transport;
+
+option go_package = "github.com/tommasoprandin/goactor/transport";
+
+service Transport {
+  rpc Stream(stream Frame) returns (stream Frame);
+}
+
+message Frame { repeated bytes envelopes = 1; }
