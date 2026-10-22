@@ -5,7 +5,9 @@ import (
 	"sync"
 
 	"github.com/tommasoprandin/goactor/codec"
+	"github.com/tommasoprandin/goactor/config"
 	"github.com/tommasoprandin/goactor/mailbox"
+	"github.com/tommasoprandin/goactor/transport"
 )
 
 var (
@@ -16,6 +18,8 @@ var (
 	ErrTimeout          = errors.New("goactor: timeout")
 	ErrUnknownType      = codec.ErrUnknownType
 	ErrSystemNotStarted = errors.New("goactor: system not started")
+	ErrNoRoute          = transport.ErrNoRoute
+	ErrUnknownNode      = config.ErrUnknownNode
 
 	errNotImplemented = errors.New("goactor: not implemented")
 	errRunning        = errors.New("goactor: a system is already running in this process")
@@ -71,21 +75,14 @@ type Ref[T any] struct {
 
 func (r Ref[T]) ID() ActorID { return r.id }
 
-// Send serialises msg and enqueues the copy without blocking. A nil error means the message was
-// accepted, not processed.
+// Send serialises msg and hands the copy to its destination without blocking. A nil error means
+// the message was accepted, not processed: a remote actor found dead on arrival drops it silently.
 func (r Ref[T]) Send(msg T) error {
-	if r.id.IsZero() {
-		return ErrActorDead
-	}
 	s := current.Load()
 	if s == nil {
 		return ErrSystemNotStarted
 	}
-	name, payload, err := codec.Marshal(msg)
-	if err != nil {
-		return err
-	}
-	return s.deliver(&codec.Envelope{To: r.id, TypeName: name, Payload: payload})
+	return send(s, r.id, ActorID{}, msg)
 }
 
 // GobEncode writes only the ActorID.

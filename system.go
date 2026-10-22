@@ -1,6 +1,7 @@
 package goactor
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -14,6 +15,7 @@ import (
 	"github.com/tommasoprandin/goactor/codec"
 	"github.com/tommasoprandin/goactor/config"
 	"github.com/tommasoprandin/goactor/mailbox"
+	"github.com/tommasoprandin/goactor/transport"
 )
 
 const (
@@ -26,12 +28,17 @@ type System struct {
 	node  NodeID
 	epoch uint32
 	seq   SeqAllocator
+	cfg   *config.Config
+	view  NodeView
+	out   outbound
 
 	mu      sync.RWMutex
 	actors  map[ActorID]actorHandle
-	pending map[ActorID]inbox
+	pending map[ActorID]pendingReply
 	stopped bool
 	wg      sync.WaitGroup
+
+	nacksDropped atomic.Uint64
 }
 
 // Need this because go can't store generic types with different
@@ -46,11 +53,47 @@ type actorHandle interface {
 	depth() int64
 }
 
+type pendingReply interface {
+	inbox
+	fail(err error)
+}
+
+// NodeView is the local opinion of which nodes are running. Remote sends consult it before the
+// transport.
+type NodeView interface {
+	IsAlive(NodeID) bool
+	Epoch(NodeID) (uint32, bool)
+}
+
+// staticView reports every configured node alive and knows no epochs.
+type staticView struct{ cfg *config.Config }
+
+func (v staticView) IsAlive(id NodeID) bool {
+	_, err := v.cfg.Node(id)
+	return err == nil
+}
+
+func (staticView) Epoch(NodeID) (uint32, bool) { return 0, false }
+
+type outbound interface {
+	Send(to NodeID, e *codec.Envelope) error
+	Close() error
+}
+
+// A Nack's payload is one byte indexing nackErrs.
+var nackErrs = []error{ErrActorDead, ErrUnknownType, ErrTypeMismatch}
+
 var current atomic.Pointer[System]
 
-// Start runs node id of cfg under a fresh epoch taken from cfg.DataDir. A process runs at most one
-// System at a time.
+// Start runs node id of cfg under a fresh epoch taken from cfg.DataDir, and connects it to the
+// other configured nodes. A process runs at most one System at a time.
 func Start(cfg *config.Config, id NodeID) (*System, error) {
+	return start(cfg, id, staticView{cfg}, func(h transport.Handler) (outbound, error) {
+		return transport.New(cfg, id, h)
+	})
+}
+
+func start(cfg *config.Config, id NodeID, view NodeView, dial func(transport.Handler) (outbound, error)) (*System, error) {
 	if current.Load() != nil {
 		return nil, errRunning
 	}
@@ -61,13 +104,23 @@ func Start(cfg *config.Config, id NodeID) (*System, error) {
 	if err != nil {
 		return nil, err
 	}
+	in := new(inbound)
+	out, err := dial(in)
+	if err != nil {
+		return nil, err
+	}
 	s := &System{
 		node:    id,
 		epoch:   epoch,
+		cfg:     cfg,
+		view:    view,
+		out:     out,
 		actors:  make(map[ActorID]actorHandle),
-		pending: make(map[ActorID]inbox),
+		pending: make(map[ActorID]pendingReply),
 	}
+	in.sys.Store(s)
 	if !current.CompareAndSwap(nil, s) {
+		out.Close()
 		return nil, errRunning
 	}
 	return s, nil
@@ -101,10 +154,43 @@ func (s *System) Shutdown() {
 	case <-time.After(shutdownTimeout):
 		slog.Warn("goactor: shutdown timed out", "node", s.node)
 	}
+	if err := s.out.Close(); err != nil {
+		slog.Warn("goactor: closing transport", "node", s.node, "err", err)
+	}
 	current.CompareAndSwap(s, nil)
 }
 
+func send[T any](s *System, to, from ActorID, msg T) error {
+	if to.IsZero() {
+		return ErrActorDead
+	}
+	name, payload, err := codec.Marshal(msg)
+	if err != nil {
+		return err
+	}
+	return s.route(&codec.Envelope{To: to, From: from, TypeName: name, Payload: payload})
+}
+
+func (s *System) route(e *codec.Envelope) error {
+	to := e.To.Node
+	if to == s.node {
+		return s.deliver(e)
+	}
+	if _, err := s.cfg.Node(to); err != nil {
+		return err
+	}
+	if !s.view.IsAlive(to) {
+		return ErrNodeDown
+	}
+	return s.out.Send(to, e)
+}
+
+// deliver is the single delivery routine of local sends and inbound traffic alike.
 func (s *System) deliver(e *codec.Envelope) error {
+	if e.Kind == codec.Nack {
+		s.nacked(e)
+		return nil
+	}
 	h, err := s.lookup(e.To)
 	if err != nil {
 		return err
@@ -116,10 +202,39 @@ func (s *System) deliver(e *codec.Envelope) error {
 	return h.enqueue(msg)
 }
 
-func (s *System) lookup(id ActorID) (inbox, error) {
-	if id.Node != s.node {
-		return nil, errNotImplemented
+func (s *System) nacked(e *codec.Envelope) {
+	s.mu.RLock()
+	p, ok := s.pending[e.To]
+	s.mu.RUnlock()
+	if !ok || len(e.Payload) != 1 || int(e.Payload[0]) >= len(nackErrs) {
+		s.nacksDropped.Add(1)
+		return
 	}
+	p.fail(nackErrs[e.Payload[0]])
+}
+
+// inbound is the System's transport.Handler. It drops envelopes until start has built the System:
+// none of them can address a live actor yet.
+type inbound struct{ sys atomic.Pointer[System] }
+
+func (in *inbound) Deliver(e *codec.Envelope) {
+	s := in.sys.Load()
+	if s == nil {
+		return
+	}
+	err := s.deliver(e)
+	if err == nil || e.From.IsZero() {
+		return
+	}
+	code := slices.IndexFunc(nackErrs, func(n error) bool { return errors.Is(err, n) })
+	if code < 0 {
+		slog.Warn("goactor: dropping envelope", "to", e.To, "err", err)
+		return
+	}
+	s.route(&codec.Envelope{Kind: codec.Nack, To: e.From, Payload: []byte{byte(code)}})
+}
+
+func (s *System) lookup(id ActorID) (inbox, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if h, ok := s.actors[id]; ok {
@@ -131,7 +246,7 @@ func (s *System) lookup(id ActorID) (inbox, error) {
 	return nil, ErrActorDead
 }
 
-func (s *System) addPending(h inbox) ActorID {
+func (s *System) addPending(h pendingReply) ActorID {
 	id := ActorID{Node: s.node, Epoch: s.epoch, Seq: s.seq.Next()}
 	s.mu.Lock()
 	s.pending[id] = h

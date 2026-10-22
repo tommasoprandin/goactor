@@ -25,26 +25,37 @@ func Request[T, R any](ctx Context, r Ref[T], msg T, timeout time.Duration) (R, 
 	defer s.remove(id)
 	// Need to write into msg the reply address
 	reflect.ValueOf(&msg).Elem().Field(field).Set(reflect.ValueOf(Ref[R]{id: id}))
-	if err := r.Send(msg); err != nil {
+	if err := send(s, r.id, id, msg); err != nil {
 		return zero, err
 	}
 	select {
-	case v := <-slot:
-		return v, nil
+	case res := <-slot:
+		return res.v, res.err
 	case <-time.After(timeout):
 		return zero, ErrTimeout
 	}
 }
 
-type replySlot[R any] chan R
+type reply[R any] struct {
+	v   R
+	err error
+}
+
+type replySlot[R any] chan reply[R]
 
 func (s replySlot[R]) enqueue(msg any) error {
 	m, ok := msg.(R)
 	if !ok {
 		return fmt.Errorf("%w: reply is %v, got %T", ErrTypeMismatch, reflect.TypeFor[R](), msg)
 	}
+	return s.put(reply[R]{v: m})
+}
+
+func (s replySlot[R]) fail(err error) { s.put(reply[R]{err: err}) }
+
+func (s replySlot[R]) put(r reply[R]) error {
 	select {
-	case s <- m:
+	case s <- r:
 		return nil
 	default:
 		return ErrActorDead

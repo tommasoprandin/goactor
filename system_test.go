@@ -3,6 +3,7 @@ package goactor
 import (
 	"errors"
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -12,10 +13,15 @@ import (
 
 	"go.uber.org/goleak"
 
+	"github.com/tommasoprandin/goactor/codec"
 	"github.com/tommasoprandin/goactor/config"
+	"github.com/tommasoprandin/goactor/transport"
 )
 
 func TestMain(m *testing.M) {
+	if os.Getenv(envNode) != "" {
+		os.Exit(runNode())
+	}
 	goleak.VerifyTestMain(m)
 }
 
@@ -77,17 +83,56 @@ func init() {
 	RegisterMessage[string]("string")
 }
 
-func newSystem(t *testing.T) *System {
+// fakeOut stands in for the transport and records what it is handed.
+type fakeOut struct {
+	mu   sync.Mutex
+	sent []*codec.Envelope
+}
+
+func (o *fakeOut) Send(_ NodeID, e *codec.Envelope) error {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.sent = append(o.sent, e)
+	return nil
+}
+
+func (o *fakeOut) Close() error { return nil }
+
+func (o *fakeOut) envelopes() []*codec.Envelope {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.sent)
+}
+
+// startSystem runs node 1 of a two-node cluster over out, and returns the handler a transport
+// would have been given.
+func startSystem(t *testing.T, view NodeView, out outbound) (*System, transport.Handler) {
 	t.Helper()
 	cfg := &config.Config{
-		Cluster: []config.NodeConfig{{ID: 1, Gossip: "127.0.0.1:7946", GRPC: "127.0.0.1:9000"}},
+		Cluster: []config.NodeConfig{
+			{ID: 1, Gossip: "127.0.0.1:7946", GRPC: "127.0.0.1:9000"},
+			{ID: 2, Gossip: "127.0.0.1:7947", GRPC: "127.0.0.1:9001"},
+		},
 		DataDir: t.TempDir(),
 	}
-	s, err := Start(cfg, 1)
+	if view == nil {
+		view = staticView{cfg}
+	}
+	var h transport.Handler
+	s, err := start(cfg, 1, view, func(in transport.Handler) (outbound, error) {
+		h = in
+		return out, nil
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Shutdown)
+	return s, h
+}
+
+func newSystem(t *testing.T) *System {
+	t.Helper()
+	s, _ := startSystem(t, nil, new(fakeOut))
 	return s
 }
 
