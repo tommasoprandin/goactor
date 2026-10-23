@@ -37,7 +37,9 @@ type recorder struct {
 	got  []*codec.Envelope
 }
 
-func (r *recorder) Deliver(e *codec.Envelope) {
+func drop(*codec.Envelope) {}
+
+func (r *recorder) deliver(e *codec.Envelope) {
 	if r.gate != nil {
 		<-r.gate
 	}
@@ -73,8 +75,8 @@ func cluster(t *testing.T, n int) *config.Config {
 
 func start(t *testing.T, cfg *config.Config, id NodeID, h Handler, services ...func(grpc.ServiceRegistrar)) *Transport {
 	t.Helper()
-	tr, err := New(cfg, id, h, services...)
-	if err != nil {
+	tr := New(cfg, id)
+	if err := tr.Start(h, services...); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { tr.Close() })
@@ -105,8 +107,8 @@ func TestExchange(t *testing.T) {
 	const n = 100_000
 	cfg := cluster(t, 2)
 	var ra, rb recorder
-	a := start(t, cfg, 1, &ra)
-	b := start(t, cfg, 2, &rb)
+	a := start(t, cfg, 1, ra.deliver)
+	b := start(t, cfg, 2, rb.deliver)
 	waitFor(t, "streams", func() bool { return a.Epoch(2) == 1 && b.Epoch(1) == 1 })
 
 	var wg sync.WaitGroup
@@ -152,13 +154,14 @@ func TestBatching(t *testing.T) {
 		}
 		return countingStream{s, &frames}, nil
 	})
-	a, err := newTransport(cfg, 1, &recorder{}, []grpc.DialOption{count}, nil)
-	if err != nil {
+	a := New(cfg, 1)
+	a.dialOpts = []grpc.DialOption{count}
+	if err := a.Start(drop); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { a.Close() })
 	var rb recorder
-	start(t, cfg, 2, &rb)
+	start(t, cfg, 2, rb.deliver)
 	waitFor(t, "stream", func() bool { return a.Epoch(2) == 1 })
 
 	for i := range n {
@@ -174,7 +177,7 @@ func TestBatching(t *testing.T) {
 
 func TestErrors(t *testing.T) {
 	cfg := cluster(t, 2)
-	a := start(t, cfg, 1, &recorder{})
+	a := start(t, cfg, 1, drop)
 
 	if err := a.Send(9, envelope(0)); !errors.Is(err, ErrUnknownNode) {
 		t.Fatalf("Send to unconfigured node: %v", err)
@@ -198,8 +201,8 @@ func TestErrors(t *testing.T) {
 
 func TestService(t *testing.T) {
 	cfg := cluster(t, 2)
-	a := start(t, cfg, 1, &recorder{})
-	start(t, cfg, 2, &recorder{}, registerHealth)
+	a := start(t, cfg, 1, drop)
+	start(t, cfg, 2, drop, registerHealth)
 	waitFor(t, "connection", func() bool { return a.Epoch(2) == 1 })
 
 	conn, err := a.Conn(2)
@@ -214,7 +217,7 @@ func TestService(t *testing.T) {
 
 func TestRejectUnknownNode(t *testing.T) {
 	cfg := cluster(t, 1)
-	start(t, cfg, 1, &recorder{}, registerHealth)
+	start(t, cfg, 1, drop, registerHealth)
 	conn, err := grpc.NewClient("passthrough:///"+cfg.Cluster[0].GRPC, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		t.Fatal(err)
@@ -239,9 +242,9 @@ func TestRejectUnknownNode(t *testing.T) {
 func TestReconnect(t *testing.T) {
 	const n = 32 << 10 // 1 KiB each, past the 16 MiB HTTP/2 window cap
 	cfg := cluster(t, 2)
-	a := start(t, cfg, 1, &recorder{})
+	a := start(t, cfg, 1, drop)
 	old := &recorder{gate: make(chan struct{})}
-	b := start(t, cfg, 2, old)
+	b := start(t, cfg, 2, old.deliver)
 	waitFor(t, "stream", func() bool { return a.Epoch(2) == 1 })
 
 	big := &codec.Envelope{Payload: make([]byte, 1<<10)}
@@ -262,7 +265,7 @@ func TestReconnect(t *testing.T) {
 	}
 
 	fresh := &recorder{}
-	start(t, cfg, 2, fresh)
+	start(t, cfg, 2, fresh.deliver)
 	waitFor(t, "reconnect", func() bool { return a.Epoch(2) == 2 })
 	marker := envelope(7)
 	if err := a.Send(2, marker); err != nil {

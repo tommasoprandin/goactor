@@ -12,6 +12,7 @@ import (
 	"testing/synctest"
 
 	"go.uber.org/goleak"
+	"google.golang.org/grpc"
 
 	"github.com/tommasoprandin/goactor/codec"
 	"github.com/tommasoprandin/goactor/config"
@@ -88,8 +89,14 @@ func init() {
 
 // fakeOut stands in for the transport and records what it is handed.
 type fakeOut struct {
+	h    transport.Handler
 	mu   sync.Mutex
 	sent []*codec.Envelope
+}
+
+func (o *fakeOut) Start(h transport.Handler, _ ...func(grpc.ServiceRegistrar)) error {
+	o.h = h
+	return nil
 }
 
 func (o *fakeOut) Send(_ NodeID, e *codec.Envelope) error {
@@ -107,9 +114,8 @@ func (o *fakeOut) envelopes() []*codec.Envelope {
 	return slices.Clone(o.sent)
 }
 
-// startSystem runs node 1 of a two-node cluster over out, and returns the handler a transport
-// would have been given.
-func startSystem(t *testing.T, view NodeView, out outbound) (*System, transport.Handler) {
+// startSystem runs node 1 of a two-node cluster over out.
+func startSystem(t *testing.T, view NodeView, out *fakeOut) *System {
 	t.Helper()
 	cfg := &config.Config{
 		Cluster: []config.NodeConfig{
@@ -121,22 +127,17 @@ func startSystem(t *testing.T, view NodeView, out outbound) (*System, transport.
 	if view == nil {
 		view = staticView{cfg}
 	}
-	var h transport.Handler
-	s, err := start(cfg, 1, view, func(in transport.Handler) (outbound, error) {
-		h = in
-		return out, nil
-	})
+	s, err := start(cfg, 1, view, out)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(s.Shutdown)
-	return s, h
+	return s
 }
 
 func newSystem(t *testing.T) *System {
 	t.Helper()
-	s, _ := startSystem(t, nil, new(fakeOut))
-	return s
+	return startSystem(t, nil, new(fakeOut))
 }
 
 func spawnProbe(t *testing.T, s *System, h hooks) Ref[int] {

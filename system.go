@@ -12,6 +12,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"google.golang.org/grpc"
+
 	"github.com/tommasoprandin/goactor/codec"
 	"github.com/tommasoprandin/goactor/config"
 	"github.com/tommasoprandin/goactor/mailbox"
@@ -76,6 +78,7 @@ func (v staticView) IsAlive(id NodeID) bool {
 func (staticView) Epoch(NodeID) (uint32, bool) { return 0, false }
 
 type outbound interface {
+	Start(h transport.Handler, services ...func(grpc.ServiceRegistrar)) error
 	Send(to NodeID, e *codec.Envelope) error
 	Close() error
 }
@@ -88,12 +91,10 @@ var current atomic.Pointer[System]
 // Start runs node id of cfg under a fresh epoch taken from cfg.DataDir, and connects it to the
 // other configured nodes. A process runs at most one System at a time.
 func Start(cfg *config.Config, id NodeID) (*System, error) {
-	return start(cfg, id, staticView{cfg}, func(h transport.Handler) (outbound, error) {
-		return transport.New(cfg, id, h)
-	})
+	return start(cfg, id, staticView{cfg}, transport.New(cfg, id))
 }
 
-func start(cfg *config.Config, id NodeID, view NodeView, dial func(transport.Handler) (outbound, error)) (*System, error) {
+func start(cfg *config.Config, id NodeID, view NodeView, out outbound) (*System, error) {
 	if current.Load() != nil {
 		return nil, errRunning
 	}
@@ -101,11 +102,6 @@ func start(cfg *config.Config, id NodeID, view NodeView, dial func(transport.Han
 		return nil, err
 	}
 	epoch, err := LoadEpoch(cfg.DataDir, id)
-	if err != nil {
-		return nil, err
-	}
-	in := new(inbound)
-	out, err := dial(in)
 	if err != nil {
 		return nil, err
 	}
@@ -118,7 +114,9 @@ func start(cfg *config.Config, id NodeID, view NodeView, dial func(transport.Han
 		actors:  make(map[ActorID]actorHandle),
 		pending: make(map[ActorID]pendingReply),
 	}
-	in.sys.Store(s)
+	if err := out.Start(s.receive); err != nil {
+		return nil, err
+	}
 	if !current.CompareAndSwap(nil, s) {
 		out.Close()
 		return nil, errRunning
@@ -213,15 +211,8 @@ func (s *System) nacked(e *codec.Envelope) {
 	p.fail(nackErrs[e.Payload[0]])
 }
 
-// inbound is the System's transport.Handler. It drops envelopes until start has built the System:
-// none of them can address a live actor yet.
-type inbound struct{ sys atomic.Pointer[System] }
-
-func (in *inbound) Deliver(e *codec.Envelope) {
-	s := in.sys.Load()
-	if s == nil {
-		return
-	}
+// receive handles an envelope from the transport, answering failures with a Nack.
+func (s *System) receive(e *codec.Envelope) {
 	err := s.deliver(e)
 	if err == nil || e.From.IsZero() {
 		return

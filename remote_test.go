@@ -174,12 +174,12 @@ func TestSendNodeDown(t *testing.T) {
 
 func TestUnknownTypeNack(t *testing.T) {
 	out := new(fakeOut)
-	s, in := startSystem(t, nil, out)
+	s := startSystem(t, nil, out)
 	got := make(chan int, 1)
 	r := spawnProbe(t, s, hooks{receive: func(i int) { got <- i }})
 
 	from := ActorID{Node: 2, Epoch: 1, Seq: 9}
-	in.Deliver(&codec.Envelope{To: r.ID(), From: from, TypeName: "test.noSuchType"})
+	out.h(&codec.Envelope{To: r.ID(), From: from, TypeName: "test.noSuchType"})
 	sent := out.envelopes()
 	if len(sent) != 1 || sent[0].Kind != codec.Nack || sent[0].To != from || len(sent[0].Payload) != 1 {
 		t.Fatalf("sent %+v", sent)

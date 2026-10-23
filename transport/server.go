@@ -36,7 +36,7 @@ func (s *server) Stream(st Transport_StreamServer) error {
 				slog.Warn("goactor: dropping envelope", "err", err)
 				continue
 			}
-			s.h.Deliver(e)
+			s.h(e)
 		}
 	}
 }
