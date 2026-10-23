@@ -43,11 +43,14 @@ func (s sink) Receive(_ *ActorContext[hop], h hop) { s <- h }
 
 func (sink) Stop(*ActorContext[hop], error) {}
 
+var (
+	relayBehavior = Register("test.relay", func(tag int) Actor[hop] { return &relay{tag} })
+	sinkBehavior  = Register("test.sink", func(ch chan hop) Actor[hop] { return sink(ch) })
+)
+
 func init() {
-	Register("test.relay", func(tag int) Actor[hop] { return &relay{tag} })
-	Register("test.sink", func(ch chan hop) Actor[hop] { return sink(ch) })
 	scenarios["relay"] = func(s *System) ([]ActorID, error) {
-		r, err := Spawn[hop](s.Root(), "test.relay", int(s.node))
+		r, err := Spawn(s.Root(), relayBehavior, int(s.node))
 		return []ActorID{r.ID()}, err
 	}
 }
@@ -68,7 +71,7 @@ func TestRemote(t *testing.T) {
 	root := c.sys.Root()
 	far := Ref[hop]{id: c.nodes[3].actors[0]}
 	got := make(chan hop, 10_000)
-	back, err := Spawn[hop](root, "test.sink", got)
+	back, err := Spawn(root, sinkBehavior, got)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +125,7 @@ func TestLocationTransparency(t *testing.T) {
 	root := c.sys.Root()
 	local := make([]Ref[hop], 3)
 	for i := range local {
-		r, err := Spawn[hop](root, "test.relay", i+1)
+		r, err := Spawn(root, relayBehavior, i+1)
 		if err != nil {
 			t.Fatal(err)
 		}

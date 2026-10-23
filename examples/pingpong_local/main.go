@@ -46,11 +46,9 @@ func (p *Player) Stop(ctx *goactor.ActorContext[Ball], err error) {
 	fmt.Printf("%s stopped (err=%v)\n", p.Name, err)
 }
 
-func init() {
-	goactor.Register("pingpong.Player", func(a PlayerArgs) goactor.Actor[Ball] {
-		return &Player{a}
-	})
-}
+var PlayerBehavior = goactor.Register("pingpong.Player", func(a PlayerArgs) goactor.Actor[Ball] {
+	return &Player{a}
+})
 
 func main() {
 	cfgPath := flag.String("config", "cluster.yaml", "cluster configuration file")
@@ -69,11 +67,11 @@ func main() {
 	defer sys.Shutdown()
 
 	done := make(chan struct{})
-	ping, err := goactor.Spawn[Ball](sys.Root(), "pingpong.Player", PlayerArgs{Name: "ping", Done: done})
+	ping, err := goactor.Spawn(sys.Root(), PlayerBehavior, PlayerArgs{Name: "ping", Done: done})
 	if err != nil {
 		log.Fatal(err)
 	}
-	pong, err := goactor.Spawn[Ball](sys.Root(), "pingpong.Player", PlayerArgs{Name: "pong", Done: done})
+	pong, err := goactor.Spawn(sys.Root(), PlayerBehavior, PlayerArgs{Name: "pong", Done: done})
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -272,9 +272,9 @@ func WithNode(id NodeID) SpawnOpt {
 	return func(o *spawnOpts) { o.node = id }
 }
 
-// Spawn creates an actor running behavior, constructed from args. It does not wait for the actor's
-// Start, so a failing Start shows up as ErrActorDead on a later Send.
-func Spawn[T any](ctx Context, behavior string, args any, opts ...SpawnOpt) (Ref[T], error) {
+// Spawn creates an actor running b, constructed from args. It does not wait for the actor's Start,
+// so a failing Start shows up as ErrActorDead on a later Send.
+func Spawn[A, T any](ctx Context, b Behavior[A, T], args A, opts ...SpawnOpt) (Ref[T], error) {
 	s := ctx.system()
 	var o spawnOpts
 	for _, opt := range opts {
@@ -283,12 +283,12 @@ func Spawn[T any](ctx Context, behavior string, args any, opts ...SpawnOpt) (Ref
 	if o.node != 0 && o.node != s.node {
 		return Ref[T]{}, errNotImplemented
 	}
-	e, ok := lookupBehavior(behavior)
+	e, ok := lookupBehavior(b.name)
 	if !ok {
-		return Ref[T]{}, fmt.Errorf("%w: %q", ErrUnknownBehavior, behavior)
+		return Ref[T]{}, fmt.Errorf("%w: %q", ErrUnknownBehavior, b.name)
 	}
 	if t := reflect.TypeFor[T](); e.msgType != t {
-		return Ref[T]{}, fmt.Errorf("%w: behavior %q receives %v, not %v", ErrTypeMismatch, behavior, e.msgType, t)
+		return Ref[T]{}, fmt.Errorf("%w: behavior %q receives %v, not %v", ErrTypeMismatch, b.name, e.msgType, t)
 	}
 	id, err := e.spawn(s, args)
 	if err != nil {

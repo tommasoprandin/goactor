@@ -77,9 +77,12 @@ func (p *pingPong) Receive(ctx *ActorContext[ball], b ball) {
 
 func (p *pingPong) Stop(*ActorContext[ball], error) {}
 
+var (
+	probeBehavior    = Register("test.probe", newProbe)
+	pingPongBehavior = Register("test.pingpong", func(done chan struct{}) Actor[ball] { return &pingPong{done} })
+)
+
 func init() {
-	Register("test.probe", newProbe)
-	Register("test.pingpong", func(done chan struct{}) Actor[ball] { return &pingPong{done} })
 	RegisterMessage[string]("string")
 }
 
@@ -138,7 +141,7 @@ func newSystem(t *testing.T) *System {
 
 func spawnProbe(t *testing.T, s *System, h hooks) Ref[int] {
 	t.Helper()
-	r, err := Spawn[int](s.Root(), "test.probe", h)
+	r, err := Spawn(s.Root(), probeBehavior, h)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,10 +206,10 @@ func TestTypeMismatch(t *testing.T) {
 	}
 
 	built := probesBuilt.Load()
-	if _, err := Spawn[int](s.Root(), "test.probe", "not hooks"); !errors.Is(err, ErrTypeMismatch) {
+	if _, err := Spawn(s.Root(), Behavior[string, int](probeBehavior), "not hooks"); !errors.Is(err, ErrTypeMismatch) {
 		t.Fatalf("wrong args: %v", err)
 	}
-	if _, err := Spawn[string](s.Root(), "test.probe", hooks{}); !errors.Is(err, ErrTypeMismatch) {
+	if _, err := Spawn(s.Root(), Behavior[hooks, string](probeBehavior), hooks{}); !errors.Is(err, ErrTypeMismatch) {
 		t.Fatalf("wrong T: %v", err)
 	}
 	if n := probesBuilt.Load(); n != built {
@@ -281,7 +284,7 @@ func TestConcurrentSpawn(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range ids {
 		wg.Go(func() {
-			r, err := Spawn[int](s.Root(), "test.probe", hooks{})
+			r, err := Spawn(s.Root(), probeBehavior, hooks{})
 			if err != nil {
 				t.Error(err)
 			}
@@ -301,11 +304,11 @@ func TestConcurrentSpawn(t *testing.T) {
 func TestPingPong(t *testing.T) {
 	s := newSystem(t)
 	done := make(chan struct{})
-	a, err := Spawn[ball](s.Root(), "test.pingpong", done)
+	a, err := Spawn(s.Root(), pingPongBehavior, done)
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := Spawn[ball](s.Root(), "test.pingpong", done)
+	b, err := Spawn(s.Root(), pingPongBehavior, done)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +330,7 @@ func TestShutdown(t *testing.T) {
 	if n := stops.Load(); n != 100 {
 		t.Fatalf("%d graceful stops, want 100", n)
 	}
-	if _, err := Spawn[int](s.Root(), "test.probe", hooks{}); !errors.Is(err, ErrNodeDown) {
+	if _, err := Spawn(s.Root(), probeBehavior, hooks{}); !errors.Is(err, ErrNodeDown) {
 		t.Fatalf("spawn after shutdown: %v", err)
 	}
 }

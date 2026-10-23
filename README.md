@@ -91,18 +91,21 @@ itself, and is incremented from a counter file in the data directory at every st
 A named constructor, registered at package initialisation and compiled into the binary:
 
 ```go
-func init() {
-    goactor.Register("mandelbrot.Worker", func(_ struct{}) goactor.Actor[Tile] { return &Worker{} })
-    goactor.Register("mandelbrot.Coordinator", func(p Params) goactor.Actor[TileDone] {
+var (
+    WorkerBehavior = goactor.Register("mandelbrot.Worker", func(_ struct{}) goactor.Actor[Tile] {
+        return &Worker{}
+    })
+    CoordinatorBehavior = goactor.Register("mandelbrot.Coordinator", func(p Params) goactor.Actor[TileDone] {
         return &Coordinator{params: p}
     })
-}
+)
 ```
 
-The constructor's argument and message types are part of the behavior's contract: `Spawn` and
-`SpawnNamed` type-check their `args` against the argument type and their type parameter `T` against
-the message type, and fail with `ErrTypeMismatch` on disagreement. `Register` registers both types
-with the wire codec.
+The constructor's argument and message types are part of the behavior's contract: `Register` returns
+a `Behavior[A, T]` handle carrying both, so `Spawn` and `SpawnNamed` reject mismatched `args` and
+references at compile time, and infer `A` and `T`. The handle is compile-time only: on the wire a
+behavior is just its name, and a node resolves that name in its own registry. `Register` also
+registers both types with the wire codec.
 
 The code of every actor is replicated in every execution node (the binary is the same), so every node can construct every behavior, which is what allows an actor to be placed on any node.
 
@@ -213,12 +216,12 @@ package-level functions taking a context.
 
 ```go
 // Registration (package init time)
-func Register[A, T any](name string, ctor func(A) Actor[T])
+func Register[A, T any](name string, ctor func(A) Actor[T]) Behavior[A, T]
 func RegisterMessage[T any](name string)
 
 // Spawning
-func Spawn[T any](ctx Context, behavior string, args any, opts ...SpawnOpt) (Ref[T], error)
-func SpawnNamed[T any](ctx Context, name, behavior string, args any) (Ref[T], bool, error)
+func Spawn[A, T any](ctx Context, b Behavior[A, T], args A, opts ...SpawnOpt) (Ref[T], error)
+func SpawnNamed[A, T any](ctx Context, name string, b Behavior[A, T], args A) (Ref[T], bool, error)
 func Lookup[T any](ctx Context, name string) (Ref[T], error)
 
 // Messaging
@@ -270,8 +273,8 @@ func main() {
     }
     defer sys.Shutdown()
 
-    _, created, err := goactor.SpawnNamed[TileDone](sys.Root(),
-        "coordinator", "mandelbrot.Coordinator", Params{Width: 4096, Height: 4096, Tiles: 256})
+    _, created, err := goactor.SpawnNamed(sys.Root(),
+        "coordinator", CoordinatorBehavior, Params{Width: 4096, Height: 4096, Tiles: 256})
     if err != nil {
         log.Fatal(err)
     }
@@ -476,7 +479,7 @@ Sentinel errors returned by the API:
 | `ErrNoRoute` | No transport connection to the destination node | none, fails locally |
 | `ErrUnknownNode` | Destination `NodeID` is absent from the configuration | none, fails locally |
 | `ErrNameNotFound` | Lookup of an unregistered or released name | one registry call |
-| `ErrTypeMismatch` | `Lookup[T]` found a different message type, `Spawn` args or `T` do not match the behavior, or a `Request` type lacks `ReplyTo Ref[R]` | one registry call, or none |
+| `ErrTypeMismatch` | `Lookup[T]` found a different message type, `Spawn` args do not match the target node's behavior, or a `Request` type lacks `ReplyTo Ref[R]` | one registry call, or none |
 | `ErrRegistryUnavailable` | The shard owner for this name is not reachable | one registry call |
 | `ErrRegistryRebuilding` | The shard owner is reconstructing its shard; retry | one registry call |
 | `ErrUnknownBehavior` | Target node has no behavior registered under that name | one round trip |

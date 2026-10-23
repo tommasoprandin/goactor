@@ -24,13 +24,11 @@ func (e *echo) Receive(_ *ActorContext[query], q query) {
 
 func (e *echo) Stop(*ActorContext[query], error) {}
 
-func init() {
-	Register("test.echo", func(d time.Duration) Actor[query] { return &echo{d} })
-}
+var echoBehavior = Register("test.echo", func(d time.Duration) Actor[query] { return &echo{d} })
 
 func spawnEcho(t *testing.T, s *System, delay time.Duration) Ref[query] {
 	t.Helper()
-	r, err := Spawn[query](s.Root(), "test.echo", delay)
+	r, err := Spawn(s.Root(), echoBehavior, delay)
 	if err != nil {
 		t.Fatal(err)
 	}
