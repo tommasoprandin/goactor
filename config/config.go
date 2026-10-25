@@ -27,17 +27,13 @@ var (
 	ErrProbeTimeout        = errors.New("config: probe_timeout must be smaller than probe_interval")
 	ErrSuspicionMult       = errors.New("config: suspicion_mult below 1")
 	ErrIndirectChecks      = errors.New("config: negative indirect_checks")
-	ErrNegativeWeight      = errors.New("config: negative placement weight")
-	ErrZeroWeights         = errors.New("config: all placement weights are zero")
-	ErrNonPositiveK        = errors.New("config: non-positive k_actors or k_depth")
 	ErrUnknownNode         = errors.New("config: unknown node")
 )
 
 type Config struct {
-	Cluster   []NodeConfig
-	DataDir   string
-	Gossip    GossipConfig
-	Placement PlacementConfig
+	Cluster []NodeConfig
+	DataDir string
+	Gossip  GossipConfig
 }
 
 type NodeConfig struct {
@@ -51,22 +47,12 @@ type GossipConfig struct {
 	ProbeTimeout   time.Duration
 	IndirectChecks int
 	SuspicionMult  int
-	MetaRefresh    time.Duration
-}
-
-type PlacementConfig struct {
-	WActors float64 `yaml:"w_actors"`
-	WDepth  float64 `yaml:"w_depth"`
-	WCPU    float64 `yaml:"w_cpu"`
-	KActors float64 `yaml:"k_actors"`
-	KDepth  float64 `yaml:"k_depth"`
 }
 
 type file struct {
-	Cluster   []NodeConfig    `yaml:"cluster"`
-	DataDir   string          `yaml:"data_dir"`
-	Gossip    gossipFile      `yaml:"gossip"`
-	Placement PlacementConfig `yaml:"placement"`
+	Cluster []NodeConfig `yaml:"cluster"`
+	DataDir string       `yaml:"data_dir"`
+	Gossip  gossipFile   `yaml:"gossip"`
 }
 
 type gossipFile struct {
@@ -74,7 +60,6 @@ type gossipFile struct {
 	ProbeTimeout   duration `yaml:"probe_timeout"`
 	IndirectChecks int      `yaml:"indirect_checks"`
 	SuspicionMult  int      `yaml:"suspicion_mult"`
-	MetaRefresh    duration `yaml:"meta_refresh"`
 }
 
 // N.B. yaml.v3 decodes time.Duration only from integer nanoseconds.
@@ -89,19 +74,15 @@ func (d *duration) UnmarshalYAML(n *yaml.Node) error {
 	return nil
 }
 
-var (
-	defaultGossip = gossipFile{
-		ProbeInterval:  duration(time.Second),
-		ProbeTimeout:   duration(500 * time.Millisecond),
-		IndirectChecks: 3,
-		SuspicionMult:  4,
-		MetaRefresh:    duration(time.Second),
-	}
-	defaultPlacement = PlacementConfig{WActors: 0.2, WDepth: 0.5, WCPU: 0.3, KActors: 100, KDepth: 8}
-)
+var defaultGossip = gossipFile{
+	ProbeInterval:  duration(time.Second),
+	ProbeTimeout:   duration(500 * time.Millisecond),
+	IndirectChecks: 3,
+	SuspicionMult:  4,
+}
 
-// Load reads and validates the configuration at path. Absent gossip and placement keys take their
-// defaults; unknown keys are rejected.
+// Load reads and validates the configuration at path. Absent gossip keys take their defaults;
+// unknown keys are rejected.
 func Load(path string) (*Config, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -111,7 +92,7 @@ func Load(path string) (*Config, error) {
 }
 
 func parse(b []byte) (*Config, error) {
-	f := file{Gossip: defaultGossip, Placement: defaultPlacement}
+	f := file{Gossip: defaultGossip}
 	dec := yaml.NewDecoder(bytes.NewReader(b))
 	dec.KnownFields(true)
 	if err := dec.Decode(&f); err != nil && !errors.Is(err, io.EOF) {
@@ -125,9 +106,7 @@ func parse(b []byte) (*Config, error) {
 			ProbeTimeout:   time.Duration(f.Gossip.ProbeTimeout),
 			IndirectChecks: f.Gossip.IndirectChecks,
 			SuspicionMult:  f.Gossip.SuspicionMult,
-			MetaRefresh:    time.Duration(f.Gossip.MetaRefresh),
 		},
-		Placement: f.Placement,
 	}
 	if err := c.validate(); err != nil {
 		return nil, err
@@ -164,24 +143,12 @@ func (c *Config) validate() error {
 		return fmt.Errorf("%w: probe_interval", ErrNonPositiveDuration)
 	case g.ProbeTimeout <= 0:
 		return fmt.Errorf("%w: probe_timeout", ErrNonPositiveDuration)
-	case g.MetaRefresh <= 0:
-		return fmt.Errorf("%w: meta_refresh", ErrNonPositiveDuration)
 	case g.ProbeTimeout >= g.ProbeInterval:
 		return ErrProbeTimeout
 	case g.SuspicionMult < 1:
 		return ErrSuspicionMult
 	case g.IndirectChecks < 0:
 		return ErrIndirectChecks
-	}
-
-	p := c.Placement
-	switch {
-	case p.WActors < 0 || p.WDepth < 0 || p.WCPU < 0:
-		return ErrNegativeWeight
-	case p.WActors == 0 && p.WDepth == 0 && p.WCPU == 0:
-		return ErrZeroWeights
-	case p.KActors <= 0 || p.KDepth <= 0:
-		return ErrNonPositiveK
 	}
 	return nil
 }

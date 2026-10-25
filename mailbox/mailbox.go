@@ -6,7 +6,6 @@ package mailbox
 import (
 	"errors"
 	"sync"
-	"sync/atomic"
 )
 
 var ErrMailboxClosed = errors.New("mailbox: closed")
@@ -18,7 +17,6 @@ type Mailbox[T any] struct {
 	ipos   int
 	notify chan struct{}
 	closed bool
-	depth  atomic.Int64
 }
 
 func New[T any](initialCap int) *Mailbox[T] {
@@ -36,7 +34,6 @@ func (m *Mailbox[T]) Enqueue(v T) error {
 		return ErrMailboxClosed
 	}
 	m.outer = append(m.outer, v)
-	m.depth.Add(1)
 	m.mu.Unlock()
 	m.wake()
 	return nil
@@ -55,7 +52,6 @@ func (m *Mailbox[T]) Next(stop <-chan struct{}) (T, bool) {
 		if m.ipos < len(m.inner) {
 			v := m.inner[m.ipos]
 			m.ipos++
-			m.depth.Add(-1)
 			return v, true
 		}
 		// if inner is empty swap inner and outer
@@ -79,10 +75,6 @@ func (m *Mailbox[T]) Next(stop <-chan struct{}) (T, bool) {
 			return zero, false
 		}
 	}
-}
-
-func (m *Mailbox[T]) Depth() int64 {
-	return m.depth.Load()
 }
 
 // Close rejects further Enqueue calls. Messages already queued remain retrievable through Next.

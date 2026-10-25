@@ -21,28 +21,16 @@ gossip:
   probe_timeout:   500ms
   indirect_checks: 3
   suspicion_mult:  4
-  meta_refresh:    1s
-
-placement:
-  w_actors: 0.2
-  w_depth:  0.5
-  w_cpu:    0.3
-  k_actors: 100
-  k_depth:  8
 `
 
 const base = "cluster: [{id: 1, gossip: 'h:1', grpc: 'h:2'}]\ndata_dir: /d\n"
 
-var (
-	wantGossip = GossipConfig{
-		ProbeInterval:  time.Second,
-		ProbeTimeout:   500 * time.Millisecond,
-		IndirectChecks: 3,
-		SuspicionMult:  4,
-		MetaRefresh:    time.Second,
-	}
-	wantPlacement = PlacementConfig{WActors: 0.2, WDepth: 0.5, WCPU: 0.3, KActors: 100, KDepth: 8}
-)
+var wantGossip = GossipConfig{
+	ProbeInterval:  time.Second,
+	ProbeTimeout:   500 * time.Millisecond,
+	IndirectChecks: 3,
+	SuspicionMult:  4,
+}
 
 func TestLoadExample(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cluster.yaml")
@@ -59,9 +47,8 @@ func TestLoadExample(t *testing.T) {
 			{ID: 2, Gossip: "10.0.0.2:7946", GRPC: "10.0.0.2:9000"},
 			{ID: 3, Gossip: "10.0.0.3:7946", GRPC: "10.0.0.3:9000"},
 		},
-		DataDir:   "/var/lib/goactor",
-		Gossip:    wantGossip,
-		Placement: wantPlacement,
+		DataDir: "/var/lib/goactor",
+		Gossip:  wantGossip,
 	}
 	if !reflect.DeepEqual(c, want) {
 		t.Fatalf("got %+v, want %+v", c, want)
@@ -91,13 +78,9 @@ func TestRejectsInvalid(t *testing.T) {
 		{"cluster: [{id: 1, gossip: 'h:1', grpc: 'h:2'}]\n", ErrMissingDataDir},
 		{base + "gossip: {probe_interval: 0s}\n", ErrNonPositiveDuration},
 		{base + "gossip: {probe_timeout: -1s}\n", ErrNonPositiveDuration},
-		{base + "gossip: {meta_refresh: 0s}\n", ErrNonPositiveDuration},
 		{base + "gossip: {probe_timeout: 1s}\n", ErrProbeTimeout},
 		{base + "gossip: {suspicion_mult: 0}\n", ErrSuspicionMult},
 		{base + "gossip: {indirect_checks: -1}\n", ErrIndirectChecks},
-		{base + "placement: {w_cpu: -0.1}\n", ErrNegativeWeight},
-		{base + "placement: {w_actors: 0, w_depth: 0, w_cpu: 0}\n", ErrZeroWeights},
-		{base + "placement: {k_depth: 0}\n", ErrNonPositiveK},
 	} {
 		if _, err := parse([]byte(tc.yaml)); !errors.Is(err, tc.want) {
 			t.Errorf("%q: got %v, want %v", tc.yaml, err, tc.want)
@@ -106,35 +89,38 @@ func TestRejectsInvalid(t *testing.T) {
 }
 
 func TestRejectsUnknownKey(t *testing.T) {
-	if _, err := parse([]byte(base + "gossip: {probe_intervall: 2s}\n")); err == nil {
-		t.Error("no error")
+	for _, key := range []string{
+		"gossip: {probe_intervall: 2s}\n",
+		"gossip: {meta_refresh: 1s}\n",
+		"placement: {w_cpu: 0.3}\n",
+	} {
+		if _, err := parse([]byte(base + key)); err == nil {
+			t.Errorf("%q: no error", key)
+		}
 	}
 }
 
 func TestDefaults(t *testing.T) {
-	for _, src := range []string{base, base + "gossip:\nplacement:\n"} {
+	for _, src := range []string{base, base + "gossip:\n"} {
 		c, err := parse([]byte(src))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if c.Gossip != wantGossip || c.Placement != wantPlacement {
-			t.Errorf("%q: got %+v %+v", src, c.Gossip, c.Placement)
+		if c.Gossip != wantGossip {
+			t.Errorf("%q: got %+v", src, c.Gossip)
 		}
 	}
 }
 
 func TestPartialBlocks(t *testing.T) {
-	c, err := parse([]byte(base +
-		"gossip: {probe_interval: 2s, suspicion_mult: 6}\nplacement: {w_cpu: 0, k_depth: 4}\n"))
+	c, err := parse([]byte(base + "gossip: {probe_interval: 2s, suspicion_mult: 6}\n"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	g := wantGossip
 	g.ProbeInterval, g.SuspicionMult = 2*time.Second, 6
-	p := wantPlacement
-	p.WCPU, p.KDepth = 0, 4
-	if c.Gossip != g || c.Placement != p {
-		t.Errorf("got %+v %+v", c.Gossip, c.Placement)
+	if c.Gossip != g {
+		t.Errorf("got %+v", c.Gossip)
 	}
 }
 
@@ -144,12 +130,12 @@ func TestDuration(t *testing.T) {
 		"500ms": 500 * time.Millisecond,
 		"1m30s": 90 * time.Second,
 	} {
-		c, err := parse([]byte(base + "gossip: {meta_refresh: " + in + "}\n"))
-		if err != nil || c.Gossip.MetaRefresh != want {
+		c, err := parse([]byte(base + "gossip: {probe_interval: 1h, probe_timeout: " + in + "}\n"))
+		if err != nil || c.Gossip.ProbeTimeout != want {
 			t.Errorf("%s: got %v, %v", in, c, err)
 		}
 	}
-	if _, err := parse([]byte(base + "gossip: {meta_refresh: 1}\n")); err == nil {
+	if _, err := parse([]byte(base + "gossip: {probe_timeout: 1}\n")); err == nil {
 		t.Error("unitless 1: no error")
 	}
 }

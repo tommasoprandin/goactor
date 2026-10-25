@@ -8,8 +8,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tommasoprandin/goactor/cluster"
 	"github.com/tommasoprandin/goactor/codec"
+	"github.com/tommasoprandin/goactor/config"
 )
+
+var _ NodeView = (*cluster.Cluster)(nil)
 
 type hop struct {
 	N       int
@@ -168,6 +172,50 @@ func TestSendNodeDown(t *testing.T) {
 		t.Fatalf("send: %v", err)
 	}
 	if n := len(out.envelopes()); n != 0 {
+		t.Fatalf("%d transport calls", n)
+	}
+}
+
+func TestClusterView(t *testing.T) {
+	cfg := &config.Config{
+		Cluster: []config.NodeConfig{{ID: 1, Gossip: freeAddr(t)}, {ID: 2, Gossip: freeAddr(t)}},
+		Gossip: config.GossipConfig{
+			ProbeInterval:  100 * time.Millisecond,
+			ProbeTimeout:   50 * time.Millisecond,
+			IndirectChecks: 3,
+			SuspicionMult:  4,
+		},
+	}
+	self, err := cluster.Join(cfg, 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { self.Leave() })
+	peer, err := cluster.Join(cfg, 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { peer.Leave() })
+	if !eventually(func() bool { return self.IsAlive(2) }) {
+		t.Fatal("peer never alive")
+	}
+
+	out := new(fakeOut)
+	startSystem(t, self, out)
+	r := Ref[int]{id: ActorID{Node: 2, Epoch: 1, Seq: 1}}
+	if err := r.Send(1); err != nil {
+		t.Fatalf("send to live node: %v", err)
+	}
+	if err := peer.Leave(); err != nil {
+		t.Fatal(err)
+	}
+	if !eventually(func() bool { return !self.IsAlive(2) }) {
+		t.Fatal("peer never dead")
+	}
+	if err := r.Send(1); !errors.Is(err, ErrNodeDown) {
+		t.Fatalf("send to dead node: %v", err)
+	}
+	if n := len(out.envelopes()); n != 1 {
 		t.Fatalf("%d transport calls", n)
 	}
 }

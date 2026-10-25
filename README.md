@@ -27,16 +27,17 @@ across a statically configured set of execution nodes.
 ### Implemented
 
 - Typed actors with compile-time checked message types (`Actor[T]`, `Ref[T]`).
-- Actor spawning, local or remote, with automatic placement (supporting load balancing) or explicit pinning.
+- Actor spawning, local or remote, with automatic round-robin placement or explicit pinning.
 - Location-transparent message delivery: identical semantics for local and remote actors.
 - Global registration of actors under a name (a la Erlang _named actors_), with get-or-create semantics.
-- Node membership, failure detection, and load statistics, disseminated by the SWIM protocol.
+- Node membership and failure detection, disseminated by the SWIM protocol.
 - Fast-fail delivery errors distinguishing a dead actor from an unreachable node.
 - Timer-based self-messaging for application-level timeouts.
 
 ### Not implemented
 
 - **Actor migration.** An actor lives on the node that created it until it terminates.
+- **Load balancing.** Automatic placement is round-robin and reads no load statistics.
 - **Supervision.** The framework never restarts, recreates, or reparents an actor. It simply reports actor crashes; deciding what to do about them is application logic.
 - **Monitors or links.** There is no `DOWN` message and no failure subscription. Peer death is observed through send errors and application-level timeouts.
 - **Deadlock or liveness detection** of actors.
@@ -50,7 +51,7 @@ across a statically configured set of execution nodes.
 ### Execution node
 
 One process running the framework. Each node manages transport to every other node, actor
-registration, local actor scheduling, message routing, and its shard of the name registry.
+registration, local actor scheduling, message routing, and the table of named actors it hosts.
 
 A process hosts exactly one node: it runs at most one `System` at a time, and `goactor.Start` fails
 while another is running. A multi-node cluster is therefore always several processes, on one host
@@ -129,14 +130,6 @@ gossip:
   probe_timeout:   500ms
   indirect_checks: 3
   suspicion_mult:  4
-  meta_refresh:    1s
-
-placement:
-  w_actors: 0.2
-  w_depth:  0.5
-  w_cpu:    0.3
-  k_actors: 100
-  k_depth:  8
 ```
 
 ```
@@ -146,12 +139,11 @@ myapp -config cluster.yaml -id 2
 Each node needs two addresses. `gossip` carries SWIM membership traffic and `grpc` carries actor
 messages; they are separate planes and may be reachable independently of one another.
 
-The `gossip` and `placement` blocks are optional, and omitting a block — or any single key within
-one — applies the default shown above. `gossip` tunes failure detection, trading detection latency
-against probe traffic and against the risk of declaring a merely slow node dead; see
-[Membership and liveness](#membership-and-liveness). `placement` weights the load score used to
-choose a host for a new actor; see [Placement](#placement). Like every other key, both blocks are
-cluster-wide and must be identical on every node.
+The `gossip` block is optional, and omitting it — or any single key within it — applies the default
+shown above. It tunes failure detection, trading detection latency against probe traffic and against
+the risk of declaring a merely slow node dead; see
+[Membership and liveness](#membership-and-liveness). Like every other key, it is cluster-wide and
+must be identical on every node.
 
 ## Using the framework
 
@@ -237,14 +229,12 @@ func (c *ActorContext[T]) After(d time.Duration, msg T) CancelFunc
 func WithNode(id NodeID) SpawnOpt
 ```
 
-`SpawnNamed` is get-or-create: every node may call it with the same name, exactly one registration
-wins, and all callers receive a reference to the winning actor. The candidate is always constructed
-on the calling node — the creator hosts it, so `SpawnNamed` takes no placement options. A losing
-candidate is constructed and then stopped before its reference escapes; behaviors used with
-`SpawnNamed` must therefore tolerate `Start` and `Stop` running for a candidate that never serves.
-The boolean reports whether this call won.
+`SpawnNamed` is get-or-create: every node may call it with the same name, exactly one actor is
+created, and all callers receive a reference to it. The actor always runs on the name's owner, so
+`SpawnNamed` takes no placement options; see [Naming](#naming). The boolean reports whether this
+call created it.
 
-`Lookup[T]` verifies that the registered actor accepts messages of type `T` and fails otherwise.
+`Lookup[T]` verifies that the named actor accepts messages of type `T` and fails otherwise.
 
 `Request` blocks the calling actor's goroutine until a reply arrives or the timeout expires.
 Request cycles between actors deadlock; use `Send` with `After` for scatter-gather. The request
@@ -259,7 +249,7 @@ the `System` running in the process. Used with no `System` running, it fails wit
 ### Bootstrapping an application
 
 `main` is identical on every node and contains no branch on node identity. The singleton is
-established by the name registry:
+established by its name, which fixes the one node that hosts it:
 
 ```go
 func main() {
@@ -279,7 +269,7 @@ func main() {
         log.Fatal(err)
     }
     if created {
-        log.Print("this node hosts the coordinator")
+        log.Print("this call created the coordinator")
     }
 
     sig := make(chan os.Signal, 1)
@@ -288,7 +278,8 @@ func main() {
 }
 ```
 
-The coordinator then spawns workers with `Spawn`, which places them across the cluster.
+The coordinator then spawns workers with `Spawn`, which places them round-robin across the alive
+nodes.
 
 ## Mailboxes and delivery
 
@@ -298,8 +289,6 @@ accumulates messages until the node exhausts memory.
 Each mailbox holds two queues: an outer queue appended to by senders under a mutex, and an inner
 queue owned exclusively by the actor goroutine. The inner queue is refilled from the outer queue by
 a single buffer swap when it drains, giving one lock acquisition per batch rather than per message.
-Current depth is exported as a load metric and
-published to the rest of the cluster; see [Membership and liveness](#membership-and-liveness).
 
 Guarantees:
 
@@ -328,8 +317,7 @@ framing is skipped locally, and it carries no user data.
 
 The node set is fixed by configuration, so membership is never used for discovery — every node
 knows every peer's addresses before it starts. What configuration cannot state is which of those
-peers are running at any given moment, and how loaded they are. SWIM supplies both: it is the
-framework's failure detector, and the bus over which each node's statistics reach the others. It
+peers are running at any given moment. SWIM supplies that as the framework's failure detector. It
 runs over the `gossip` address, on a plane separate from the gRPC transport.
 
 The alternatives were rejected on cost. All-to-all heartbeating needs O(N^2) messages per round,
@@ -355,29 +343,31 @@ The window before a dead node is declared dead grows roughly as
 `suspicion_mult * log10(N+1) * probe_interval`, on top of the round or two needed to notice the
 missing ack.
 
+**Rejoining.** SWIM only probes nodes it believes alive, so the protocol alone never reaches a peer
+that was down at startup or has been declared dead. Every `probe_interval`, each node therefore
+contacts every configured peer that is not alive. The same loop covers the first node up, which
+finds nobody, and a healed partition, whose sides have stopped probing each other: on contact, a
+node wrongly declared dead hears the accusation and refutes it.
+
 **What each node publishes.** Alongside its liveness state, every node attaches a small record to
-its gossip traffic and refreshes it every `meta_refresh`: its node id, its current epoch, its live
-actor count, its aggregate mailbox depth, and the CPU utilisation of its own process over the last
-interval. That record has to fit inside a bounded metadata allowance, so it is fixed-width integers
-throughout and carries no strings. Because it rides on traffic the failure detector is sending
-anyway, disseminating statistics costs no messages of its own.
+its gossip traffic: its node id and its current epoch. That record has to fit inside a bounded
+metadata allowance, so it is fixed-width integers throughout and carries no strings. Neither field
+changes while a process runs, so the record is written once at join and never refreshed.
 
 Carrying the epoch here is what lets a restart be told from a recovery. A node that was unreachable
 and returns with the epoch it had before was merely slow, and references to its actors are still
 good; one that returns with a higher epoch is a new process, and every actor the cluster remembers
 on it is gone.
 
-**The local view.** Each node folds all of this into a table of node id to state, epoch and
-statistics, read without a network call. It is consulted on every path that needs to know something
-about another node:
+**The local view.** Each node folds all of this into a table of node id to state and epoch, read
+without a network call. It is consulted on every path that needs to know something about another
+node:
 
 - `Ref[T].Send` to a remote actor checks liveness first, and fails with `ErrNodeDown` before
   touching the transport.
-- `Spawn` reads the alive set and the statistics to choose a host for a new actor.
-- An epoch change invalidates cached references to the previous incarnation and drops that node's
-  entries from the name registry.
-- The name registry answers `ErrRegistryUnavailable` while a shard owner is not alive, and
-  re-announces the names it hosts when that owner becomes alive again.
+- `Spawn` skips nodes that are not alive when choosing a host for a new actor.
+- An epoch change invalidates cached references to the previous incarnation.
+- `SpawnNamed` and `Lookup` report `ErrRegistryUnavailable` while a name's owner is not alive.
 
 **Liveness is not reachability.** SWIM's opinion and the state of the gRPC streams are independent
 signals gathered on different ports, and they can disagree. A peer may be alive in the membership
@@ -391,13 +381,10 @@ Consequences of an eventually consistent view:
   are accepted locally and then lost, which at-most-once delivery already permits.
 - A live node can be wrongly declared dead — a long garbage collection pause or a brief partition
   is enough. The cost is bounded and self-correcting: sends to it fast-fail, placement skips it,
-  and its names leave the registry until it re-announces them on returning. Nothing in the design
-  elects a leader or needs a quorum, so a divergent view cannot corrupt state, only waste work.
-- Statistics are stale by up to one refresh interval plus propagation time. Placement is built to
-  tolerate that: it needs the comparison between two sampled nodes to be right more often than
-  chance, not to be right every time.
-- Membership never changes name ownership. `hash(name) % N` is taken over the configured node set
-  rather than the alive one, so a dead node's shard stays its shard and no failure triggers
+  and its names are unavailable until it is alive again. Nothing in the design elects a leader or
+  needs a quorum, so a divergent view cannot corrupt state, only waste work.
+- Membership never changes name ownership. A name's owner is taken over the configured node set
+  rather than the alive one, so a dead node's names stay its names and no failure triggers
   rehashing.
 
 `Shutdown` leaves the cluster gracefully, so peers record the departure immediately instead of
@@ -405,52 +392,54 @@ waiting out a suspicion timeout. A node killed outright is detected on the ordin
 
 ## Naming
 
-Named actors are recorded in a distributed registry. The owner of a name is
-`hash(name) % N`, over the statically configured node set. Since membership never changes, ownership
-is fixed and no rehashing occurs.
+A name's owner hosts its actor. The owner is the node at index `fnv1a(name) % N` of the configured
+cluster list. That list never changes, so ownership is fixed and there is no rehashing, rebalancing
+or migration.
 
-The registry stores `name -> (ActorID, message type name)`. It determines the **registry authority
-for a name, not where the actor runs**; placement is independent.
+There is no registry service. Each node holds a table of the named actors it hosts, mapping
+`name -> (ActorID, message type name)`. `SpawnNamed` and `Lookup` use the owner's table, directly on
+the owner and over RPC from any other node. `SpawnNamed` holds the table's lock across check,
+construction and insert, which gives a single winner and no losing candidates: a caller that finds
+the name bound constructs nothing, and fails with `ErrTypeMismatch` if it is bound to a different
+message type.
 
-The registry is an index over state the cluster already holds: every node knows which named actors
-it hosts. When a node restarts and reclaims its shard, it broadcasts a rebuild request and
-reconstructs the shard from the other nodes' replies.
+Both functions return an ordinary `Ref`, so later sends never touch the table. Callers cache
+nothing: a `Ref` already survives anything its actor survives.
+
+When a named actor terminates, the framework removes its entry before the actor leaves the node's
+actor table. An actor that dies at once therefore leaves no stale entry, a name never resolves to an
+actor already known to be dead, and a subsequent `SpawnNamed` constructs a new actor.
+
+A named actor dies with its host, and its entry with it. A restarted owner's empty table is
+therefore correct, and there is nothing to rebuild or re-announce: its names are unbound when it
+returns, until something calls `SpawnNamed`. No other node can take over a name, which is what rules
+out duplicates even under partition. An owner wrongly declared dead loses nothing: its names resolve
+unchanged once it is alive again.
 
 Availability:
 
-- If a shard owner is down, names in that shard cannot be registered or resolved for the first time.
-- Names already resolved continue to work; callers cache the `ActorID`, which stays valid until the
-  actor terminates.
-- Other shards are unaffected.
-
-When a named actor terminates, the framework releases its name, and a subsequent `SpawnNamed` with
-that name will construct a new actor. The release is delivered to the shard owner at most once: if
-it is lost, the name stays bound to the dead actor — sends to it return `ErrActorDead` — until the
-owner next rebuilds its shard. This is an accepted limitation.
+- While a name's owner is down or unreachable, `Lookup` and `SpawnNamed` report
+  `ErrRegistryUnavailable`, which is distinct from `ErrNameNotFound`. Names owned by other nodes are
+  unaffected.
+- `Lookup` reports it at once. `SpawnNamed` retries every 250 ms for up to 30 s, stopping with
+  `ErrNodeDown` if the local `System` stops first: nodes do not wait for each other at startup, so
+  `main` routinely calls it before the owner is up. The name makes the call idempotent, so a retry
+  cannot create a second actor.
+- If a response is lost, the retry reports `false` for the call that did create the actor, so
+  possibly no caller sees `true`. This is an accepted limitation.
 
 ## Placement
 
-`Spawn` without options selects a target node by power-of-two-choices: two live nodes are sampled at
-random and the less loaded is chosen. Sampling two and taking the better one, rather than scanning
-every node for the true minimum, is what keeps placement from stampeding — against a view that is
-slightly stale, an exhaustive search sends every concurrent spawn to the same node.
+`Spawn` without options places actors round-robin. Each node keeps its own counter over the
+configured cluster list and takes the next node that is alive in its membership view, so dead nodes
+are skipped without weighting the cycle. The calling node takes its turn like any other, so `Spawn`
+without options does not mean local. Counters start at a random position, so that nodes do not all
+send their first spawn to the same target. With no node alive, `Spawn` fails with `ErrNoLiveNodes`.
 
-Load is a weighted sum of three signals gossiped by each node, each mapped onto `[0, 1)` before
-weighting so that unlike quantities can be added:
-
-- **Actor count** — the capacity term. It is the only one of the three that responds to a burst of
-  freshly spawned actors, which carry no backlog and have not yet run.
-- **Average mailbox depth**, the aggregate depth divided by the actor count — the congestion term.
-  Being an average rather than a total, it does not penalise a node merely for hosting many actors.
-- **Process CPU utilisation** over the last refresh interval — the saturation term. It measures the
-  node's own process rather than its machine, which is what keeps the signal meaningful when
-  several nodes share one host.
-
-The weights and the half-saturation points of that mapping are the `placement` keys in the
-configuration. A candidate that has not gossiped its statistics yet counts as maximally loaded, so
-a node that has only just joined is never preferred. The score is approximate by construction,
-being read from a view up to a refresh interval stale; see
-[Membership and liveness](#membership-and-liveness).
+Placement reads no load statistics. The case that matters is a burst of spawns, which should be over
+before gossip could report its effect, so statistics would be flat exactly when they were needed.
+Round-robin spreads that burst evenly. Its limitations are accepted: the spread is even only across
+the nodes alive during the burst, and a node that restarts empty gets no more than its turn.
 
 `Spawn` with `WithNode(id)` pins the actor to a specific node, failing if that node is not alive.
 
@@ -475,13 +464,12 @@ Sentinel errors returned by the API:
 | Error | Meaning | Cost |
 | --- | --- | --- |
 | `ErrActorDead` | Destination node is up; the actor is gone or the epoch is stale | one round trip |
-| `ErrNodeDown` | Destination node is not alive in the local membership view, or `Spawn` after the local `Shutdown` | none, fails locally |
+| `ErrNodeDown` | Destination node is not alive in the local membership view, or a spawn after the local `Shutdown` | none, fails locally |
 | `ErrNoRoute` | No transport connection to the destination node | none, fails locally |
 | `ErrUnknownNode` | Destination `NodeID` is absent from the configuration | none, fails locally |
-| `ErrNameNotFound` | Lookup of an unregistered or released name | one registry call |
-| `ErrTypeMismatch` | `Lookup[T]` found a different message type, `Spawn` args do not match the target node's behavior, or a `Request` type lacks `ReplyTo Ref[R]` | one registry call, or none |
-| `ErrRegistryUnavailable` | The shard owner for this name is not reachable | one registry call |
-| `ErrRegistryRebuilding` | The shard owner is reconstructing its shard; retry | one registry call |
+| `ErrNameNotFound` | Lookup of an unregistered or released name | one call to the owner |
+| `ErrTypeMismatch` | `Lookup[T]` or `SpawnNamed` found a different message type, `Spawn` args do not match the target node's behavior, or a `Request` type lacks `ReplyTo Ref[R]` | one call to the owner or target, or none |
+| `ErrRegistryUnavailable` | The owner of this name is not reachable | at most one call to the owner |
 | `ErrUnknownBehavior` | Target node has no behavior registered under that name | one round trip |
 | `ErrUnknownType` | Message type is not registered with the codec | none, fails locally |
 | `ErrNoLiveNodes` | Automatic placement found no alive node | none, fails locally |
@@ -506,8 +494,8 @@ plaintext; transport security is out of scope. Each connection carries two kinds
   pair, with batching. The stream is what provides FIFO per pair, and batching spreads the per-call
   cost of gRPC over messages that are small, numerous and one-way. Payloads are opaque to gRPC:
   message types belong to the application, so no code generated with the framework can name them.
-- **Framework requests** — remote spawn, registry operations, shard rebuild — are typed unary RPCs
-  generated from protobuf. They are genuinely request/response and need no ordering against actor
+- **Framework requests** — remote spawn and name lookup — are typed unary RPCs generated from
+  protobuf. They are genuinely request/response and need no ordering against actor
   traffic, so correlation, deadlines and cancellation come from gRPC rather than from the
   framework, and they never queue behind a batch of actor messages. Behaviour arguments in a spawn
   request stay gob-encoded, for the same reason as message payloads.
@@ -522,7 +510,7 @@ so every request reaches its peer at most once.
    already runs a `System`.
 2. Read and increment the epoch counter in the data directory.
 3. Open transport streams to all configured peers.
-4. Join the SWIM cluster, and begin publishing liveness and load statistics.
+4. Join the SWIM cluster, and begin publishing liveness and the epoch.
 5. Run application code, which registers behaviors and spawns actors.
 
 Nodes do not wait for the full cluster to become available before starting.
@@ -533,14 +521,12 @@ Nodes do not wait for the full cluster to become available before starting.
 goactor/
   actor.go            Actor[T], ActorContext[T], Ref[T]
   id.go               ActorID, NodeID re-exports, sequence allocator, epoch file
-  system.go           node runtime, spawn, dispatch, panic recovery
+  system.go           node runtime, spawn, placement, named actors, dispatch, panic recovery
   registry.go         behavior name -> constructor
   mailbox/            two-queue unbounded mailbox
   codec/              gob type registry, envelopes
   transport/          gRPC connections, per-pair message streams
-  cluster/            memberlist integration, epochs, load gossip
-  names/              sharded name registry, shard rebuild
-  placement/          power-of-two-choices selection
+  cluster/            memberlist integration, epochs
   config/             YAML parsing and validation
   internal/ident/     ActorID, NodeID definitions, shared by every subpackage
   internal/wire/      protobuf definitions of the framework RPCs

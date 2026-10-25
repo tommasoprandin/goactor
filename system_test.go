@@ -174,23 +174,6 @@ func TestLifecycle(t *testing.T) {
 	})
 }
 
-func TestDepth(t *testing.T) {
-	s := newSystem(t)
-	gate := make(chan struct{})
-	defer close(gate)
-	r := spawnProbe(t, s, hooks{start: func(*ActorContext[int]) { <-gate }})
-	for i := range 3 {
-		r.Send(i)
-	}
-	h, err := s.lookup(r.ID())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if d := h.(actorHandle).depth(); d != 3 {
-		t.Fatalf("depth %d, want 3", d)
-	}
-}
-
 func TestTypeMismatch(t *testing.T) {
 	s := newSystem(t)
 	got := make(chan int, 1)

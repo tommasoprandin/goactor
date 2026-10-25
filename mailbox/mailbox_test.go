@@ -34,14 +34,8 @@ func TestOrder(t *testing.T) {
 					t.Fatalf("producer %d: got %d, want %d", v.p, v.i, next[v.p])
 				}
 				next[v.p]++
-				if d := m.Depth(); d < 0 {
-					t.Fatalf("depth %d", d)
-				}
 			}
 			wg.Wait()
-			if d := m.Depth(); d != 0 {
-				t.Fatalf("depth %d after drain", d)
-			}
 		})
 	}
 }

@@ -52,7 +52,6 @@ type inbox interface {
 type actorHandle interface {
 	inbox
 	stop()
-	depth() int64
 }
 
 type pendingReply interface {
@@ -319,8 +318,6 @@ func (c *ActorContext[T]) enqueue(msg any) error {
 }
 
 func (c *ActorContext[T]) stop() { c.once.Do(func() { close(c.quit) }) }
-
-func (c *ActorContext[T]) depth() int64 { return c.mb.Depth() }
 
 func (c *ActorContext[T]) run() {
 	defer c.sys.wg.Done()
