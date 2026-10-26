@@ -28,7 +28,7 @@ var echoBehavior = Register("test.echo", func(d time.Duration) Actor[query] { re
 
 func spawnEcho(t *testing.T, s *System, delay time.Duration) Ref[query] {
 	t.Helper()
-	r, err := Spawn(s.Root(), echoBehavior, delay)
+	r, err := Spawn(s.Root(), echoBehavior, delay, WithNode(s.node))
 	if err != nil {
 		t.Fatal(err)
 	}

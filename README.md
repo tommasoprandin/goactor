@@ -469,12 +469,12 @@ Sentinel errors returned by the API:
 | `ErrUnknownNode` | Destination `NodeID` is absent from the configuration | none, fails locally |
 | `ErrNameNotFound` | Lookup of an unregistered or released name | one call to the owner |
 | `ErrTypeMismatch` | `Lookup[T]` or `SpawnNamed` found a different message type, `Spawn` args do not match the target node's behavior, or a `Request` type lacks `ReplyTo Ref[R]` | one call to the owner or target, or none |
-| `ErrRegistryUnavailable` | The owner of this name is not reachable | at most one call to the owner |
+| `ErrRegistryUnavailable` | The owner of this name is not reachable | at most one call to the owner, per attempt; `SpawnNamed` retries for up to 30 s |
 | `ErrUnknownBehavior` | Target node has no behavior registered under that name | one round trip |
 | `ErrUnknownType` | Message type is not registered with the codec | none, fails locally |
 | `ErrNoLiveNodes` | Automatic placement found no alive node | none, fails locally |
 | `ErrSystemNotStarted` | A `Ref[T]` was used with no `System` running in this process | none, fails locally |
-| `ErrTimeout` | `Request` deadline expired | the timeout |
+| `ErrTimeout` | `Request` or remote `Spawn` deadline expired; a spawn may still have taken effect | the timeout |
 
 `ErrUnknownType` fails at local encode. The receiver-side check that answers with a `Nack` carrying
 `ErrUnknownType` exists only as defence against mismatched binaries; such a `Nack` resolves a
@@ -501,8 +501,9 @@ plaintext; transport security is out of scope. Each connection carries two kinds
   request stay gob-encoded, for the same reason as message payloads.
 
 Errors a peer reports travel in the response body and map onto the sentinel errors of the
-[failure model](#failure-model); gRPC status carries transport failures only. No call is retried,
-so every request reaches its peer at most once.
+[failure model](#failure-model); gRPC status carries transport failures only. gRPC retries no call,
+so each request reaches its peer at most once. `SpawnNamed` retries at application level, as a new
+request, which its name makes idempotent.
 
 ## Startup
 
@@ -511,7 +512,7 @@ so every request reaches its peer at most once.
 2. Read and increment the epoch counter in the data directory.
 3. Open transport streams to all configured peers.
 4. Join the SWIM cluster, and begin publishing liveness and the epoch.
-5. Run application code, which registers behaviors and spawns actors.
+5. Run application code, which spawns actors.
 
 Nodes do not wait for the full cluster to become available before starting.
 

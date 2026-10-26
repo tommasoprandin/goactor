@@ -11,18 +11,20 @@ import (
 )
 
 var (
-	ErrActorDead        = errors.New("goactor: actor dead")
-	ErrTypeMismatch     = errors.New("goactor: type mismatch")
-	ErrUnknownBehavior  = errors.New("goactor: unknown behavior")
-	ErrNodeDown         = errors.New("goactor: node down")
-	ErrTimeout          = errors.New("goactor: timeout")
-	ErrUnknownType      = codec.ErrUnknownType
-	ErrSystemNotStarted = errors.New("goactor: system not started")
-	ErrNoRoute          = transport.ErrNoRoute
-	ErrUnknownNode      = config.ErrUnknownNode
+	ErrActorDead           = errors.New("goactor: actor dead")
+	ErrTypeMismatch        = errors.New("goactor: type mismatch")
+	ErrUnknownBehavior     = errors.New("goactor: unknown behavior")
+	ErrNodeDown            = errors.New("goactor: node down")
+	ErrTimeout             = errors.New("goactor: timeout")
+	ErrUnknownType         = codec.ErrUnknownType
+	ErrSystemNotStarted    = errors.New("goactor: system not started")
+	ErrNoRoute             = transport.ErrNoRoute
+	ErrUnknownNode         = config.ErrUnknownNode
+	ErrNoLiveNodes         = errors.New("goactor: no live nodes")
+	ErrNameNotFound        = errors.New("goactor: name not found")
+	ErrRegistryUnavailable = errors.New("goactor: registry unavailable")
 
-	errNotImplemented = errors.New("goactor: not implemented")
-	errRunning        = errors.New("goactor: a system is already running in this process")
+	errRunning = errors.New("goactor: a system is already running in this process")
 )
 
 // Actor is a behaviour receiving messages of type T. The runtime calls every method on the actor's
@@ -48,6 +50,7 @@ type Context interface {
 type ActorContext[T any] struct {
 	sys    *System
 	self   ActorID
+	name   string
 	actor  Actor[T]
 	mb     *mailbox.Mailbox[T]
 	quit   chan struct{}

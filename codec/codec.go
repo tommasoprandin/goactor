@@ -54,6 +54,13 @@ func defaultName(t reflect.Type) string {
 	return t.PkgPath() + "." + t.Name()
 }
 
+// TypeName returns the wire name t is registered under, empty if it is not registered.
+func TypeName(t reflect.Type) string {
+	types.RLock()
+	defer types.RUnlock()
+	return types.byType[t].name
+}
+
 // Marshal returns the wire name of v's dynamic type and v encoded with gob.
 func Marshal(v any) (string, []byte, error) {
 	t := reflect.TypeOf(v)

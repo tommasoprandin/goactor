@@ -64,8 +64,8 @@ func newConfig(t *testing.T, n int, g config.GossipConfig) *config.Config {
 
 func start(t *testing.T, cfg *config.Config, id ident.NodeID, epoch uint32, tune func(*memberlist.Config)) *Cluster {
 	t.Helper()
-	c, err := join(cfg, id, epoch, tune)
-	if err != nil {
+	c := New(cfg, id)
+	if err := c.join(epoch, tune); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { c.Leave() })

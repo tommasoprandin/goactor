@@ -44,6 +44,8 @@ func decodeMeta(b []byte) (Meta, bool) {
 
 // Cluster is one node's membership in the configured cluster.
 type Cluster struct {
+	cfg  *config.Config
+	self ident.NodeID
 	ml   *memberlist.Memberlist
 	view *view
 	stop context.CancelFunc
@@ -51,52 +53,55 @@ type Cluster struct {
 	once sync.Once
 }
 
-// Join starts gossiping as node self and returns without waiting for any peer.
-func Join(cfg *config.Config, self ident.NodeID, epoch uint32) (*Cluster, error) {
-	return join(cfg, self, epoch, func(*memberlist.Config) {})
+// New returns the membership of node self, with no node alive. It holds no resources until Join.
+func New(cfg *config.Config, self ident.NodeID) *Cluster {
+	return &Cluster{cfg: cfg, self: self, view: newView(cfg)}
 }
 
-func join(cfg *config.Config, self ident.NodeID, epoch uint32, tune func(*memberlist.Config)) (*Cluster, error) {
-	n, err := cfg.Node(self)
+// Join starts gossiping under epoch and returns without waiting for any peer.
+func (c *Cluster) Join(epoch uint32) error {
+	return c.join(epoch, func(*memberlist.Config) {})
+}
+
+func (c *Cluster) join(epoch uint32, tune func(*memberlist.Config)) error {
+	n, err := c.cfg.Node(c.self)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	addr, err := net.ResolveTCPAddr("tcp", n.Gossip)
 	if err != nil {
-		return nil, fmt.Errorf("cluster: %w", err)
+		return fmt.Errorf("cluster: %w", err)
 	}
 
-	v := newView(cfg)
 	mc := memberlist.DefaultLANConfig()
-	mc.Name = nodeName(self)
+	mc.Name = nodeName(c.self)
 	mc.BindAddr = addr.IP.String()
 	mc.BindPort = addr.Port
-	mc.ProbeInterval = cfg.Gossip.ProbeInterval
-	mc.ProbeTimeout = cfg.Gossip.ProbeTimeout
-	mc.IndirectChecks = cfg.Gossip.IndirectChecks
-	mc.SuspicionMult = cfg.Gossip.SuspicionMult
-	mc.Delegate = delegate(Meta{self, epoch}.encode())
-	mc.Events = v
+	mc.ProbeInterval = c.cfg.Gossip.ProbeInterval
+	mc.ProbeTimeout = c.cfg.Gossip.ProbeTimeout
+	mc.IndirectChecks = c.cfg.Gossip.IndirectChecks
+	mc.SuspicionMult = c.cfg.Gossip.SuspicionMult
+	mc.Delegate = delegate(Meta{c.self, epoch}.encode())
+	mc.Events = c.view
 	mc.Logger = slog.NewLogLogger(slog.Default().Handler(), slog.LevelDebug)
 	tune(mc)
 
-	ml, err := memberlist.Create(mc)
-	if err != nil {
-		return nil, fmt.Errorf("cluster: %w", err)
+	if c.ml, err = memberlist.Create(mc); err != nil {
+		return fmt.Errorf("cluster: %w", err)
 	}
 	ctx, stop := context.WithCancel(context.Background())
-	c := &Cluster{ml: ml, view: v, stop: stop}
-	c.wg.Go(func() { c.rejoin(ctx, cfg) })
-	return c, nil
+	c.stop = stop
+	c.wg.Go(func() { c.rejoin(ctx) })
+	return nil
 }
 
 // rejoin contacts every configured node not alive. memberlist never does: the first node up finds
 // no peer, and neither side probes a node it has declared dead, so a healed partition stays split.
-func (c *Cluster) rejoin(ctx context.Context, cfg *config.Config) {
-	t := time.NewTicker(cfg.Gossip.ProbeInterval)
+func (c *Cluster) rejoin(ctx context.Context) {
+	t := time.NewTicker(c.cfg.Gossip.ProbeInterval)
 	defer t.Stop()
 	for {
-		for _, n := range cfg.Cluster {
+		for _, n := range c.cfg.Cluster {
 			if ctx.Err() != nil {
 				return
 			}

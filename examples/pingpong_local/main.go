@@ -60,18 +60,19 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	sys, err := goactor.Start(cfg, goactor.NodeID(*nodeID))
+	self := goactor.NodeID(*nodeID)
+	sys, err := goactor.Start(cfg, self)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer sys.Shutdown()
 
 	done := make(chan struct{})
-	ping, err := goactor.Spawn(sys.Root(), PlayerBehavior, PlayerArgs{Name: "ping", Done: done})
+	ping, err := goactor.Spawn(sys.Root(), PlayerBehavior, PlayerArgs{Name: "ping", Done: done}, goactor.WithNode(self))
 	if err != nil {
 		log.Fatal(err)
 	}
-	pong, err := goactor.Spawn(sys.Root(), PlayerBehavior, PlayerArgs{Name: "pong", Done: done})
+	pong, err := goactor.Spawn(sys.Root(), PlayerBehavior, PlayerArgs{Name: "pong", Done: done}, goactor.WithNode(self))
 	if err != nil {
 		log.Fatal(err)
 	}

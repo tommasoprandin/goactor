@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package goactor.wire;
+
+option go_package = "github.com/tommasoprandin/goactor/internal/wire";
+
+service Spawner {
+  rpc Spawn(SpawnReq) returns (SpawnResp);
+  rpc Lookup(LookupReq) returns (LookupResp);
+}
+
+enum ErrorCode {
+  OK = 0;
+  UNKNOWN_BEHAVIOR = 1;
+  TYPE_MISMATCH = 2;
+  NAME_NOT_FOUND = 3;
+  NODE_DOWN = 4;
+  ACTOR_DEAD = 5;
+}
+
+message ActorID {
+  uint32 node = 1;
+  uint32 epoch = 2;
+  uint64 seq = 3;
+}
+
+message SpawnReq {
+  string behavior = 1;
+  string args_type = 2;
+  bytes args = 3;
+  string name = 4;
+}
+
+message SpawnResp {
+  ActorID id = 1;
+  bool created = 2;
+  ErrorCode error = 3;
+}
+
+message LookupReq { string name = 1; }
+
+message LookupResp {
+  ActorID id = 1;
+  string msg_type = 2;
+  ErrorCode error = 3;
+}

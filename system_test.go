@@ -87,11 +87,29 @@ func init() {
 	RegisterMessage[string]("string")
 }
 
+// staticView reports every configured node alive and knows no epochs.
+type staticView struct{ cfg *config.Config }
+
+func (v staticView) IsAlive(id NodeID) bool {
+	_, err := v.cfg.Node(id)
+	return err == nil
+}
+
+func (staticView) Epoch(NodeID) (uint32, bool) { return 0, false }
+
+// fixedMembers is a view with no lifetime of its own.
+type fixedMembers struct{ NodeView }
+
+func (fixedMembers) Join(uint32) error { return nil }
+
+func (fixedMembers) Leave() error { return nil }
+
 // fakeOut stands in for the transport and records what it is handed.
 type fakeOut struct {
-	h    transport.Handler
-	mu   sync.Mutex
-	sent []*codec.Envelope
+	h     transport.Handler
+	conns atomic.Int64
+	mu    sync.Mutex
+	sent  []*codec.Envelope
 }
 
 func (o *fakeOut) Start(h transport.Handler, _ ...func(grpc.ServiceRegistrar)) error {
@@ -104,6 +122,11 @@ func (o *fakeOut) Send(_ NodeID, e *codec.Envelope) error {
 	defer o.mu.Unlock()
 	o.sent = append(o.sent, e)
 	return nil
+}
+
+func (o *fakeOut) Conn(NodeID) (grpc.ClientConnInterface, error) {
+	o.conns.Add(1)
+	return nil, ErrNoRoute
 }
 
 func (o *fakeOut) Close() error { return nil }
@@ -127,7 +150,7 @@ func startSystem(t *testing.T, view NodeView, out *fakeOut) *System {
 	if view == nil {
 		view = staticView{cfg}
 	}
-	s, err := start(cfg, 1, view, out)
+	s, err := start(cfg, 1, fixedMembers{view}, out)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +165,7 @@ func newSystem(t *testing.T) *System {
 
 func spawnProbe(t *testing.T, s *System, h hooks) Ref[int] {
 	t.Helper()
-	r, err := Spawn(s.Root(), probeBehavior, h)
+	r, err := Spawn(s.Root(), probeBehavior, h, WithNode(s.node))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -268,7 +291,7 @@ func TestConcurrentSpawn(t *testing.T) {
 	var wg sync.WaitGroup
 	for i := range ids {
 		wg.Go(func() {
-			r, err := Spawn(s.Root(), probeBehavior, hooks{})
+			r, err := Spawn(s.Root(), probeBehavior, hooks{}, WithNode(s.node))
 			if err != nil {
 				t.Error(err)
 			}
@@ -288,11 +311,11 @@ func TestConcurrentSpawn(t *testing.T) {
 func TestPingPong(t *testing.T) {
 	s := newSystem(t)
 	done := make(chan struct{})
-	a, err := Spawn(s.Root(), pingPongBehavior, done)
+	a, err := Spawn(s.Root(), pingPongBehavior, done, WithNode(s.node))
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := Spawn(s.Root(), pingPongBehavior, done)
+	b, err := Spawn(s.Root(), pingPongBehavior, done, WithNode(s.node))
 	if err != nil {
 		t.Fatal(err)
 	}

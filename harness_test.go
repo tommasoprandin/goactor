@@ -83,11 +83,11 @@ func eventually(cond func() bool) bool {
 	return true
 }
 
-// meshed reports whether s has a stream to every other node.
+// meshed reports whether s has a stream to every other node and sees it alive.
 func meshed(s *System) bool {
 	tr := s.out.(*transport.Transport)
 	for _, n := range s.cfg.Cluster {
-		if n.ID != s.node && tr.Epoch(n.ID) == 0 {
+		if n.ID != s.node && (tr.Epoch(n.ID) == 0 || !s.view.IsAlive(n.ID)) {
 			return false
 		}
 	}
@@ -185,14 +185,18 @@ func (c *testCluster) launch(id NodeID) *testNode {
 func (c *testCluster) restart(id NodeID) {
 	c.t.Helper()
 	tr := c.sys.out.(*transport.Transport)
-	before := tr.Epoch(id)
+	streams := tr.Epoch(id)
+	epoch, _ := c.sys.view.Epoch(id)
 	old := c.nodes[id]
 	old.cmd.Process.Kill()
 	old.cmd.Wait()
 	c.nodes[id] = c.launch(id)
 	c.nodes[id].ready(c.t)
-	if !eventually(func() bool { return tr.Epoch(id) > before }) {
-		c.t.Fatalf("node 1: no stream to restarted node %d", id)
+	if !eventually(func() bool {
+		e, _ := c.sys.view.Epoch(id)
+		return tr.Epoch(id) > streams && e > epoch
+	}) {
+		c.t.Fatalf("node 1: restarted node %d not back", id)
 	}
 }
 

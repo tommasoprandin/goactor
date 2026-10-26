@@ -29,6 +29,9 @@ type relay struct{ tag int }
 func (r *relay) Start(*ActorContext[hop]) {}
 
 func (r *relay) Receive(_ *ActorContext[hop], h hop) {
+	if h.N < 0 {
+		panic("told to")
+	}
 	h.Trace = append(h.Trace, r.tag)
 	next := h.ReplyTo
 	if len(h.Route) > 0 {
@@ -54,7 +57,7 @@ var (
 
 func init() {
 	scenarios["relay"] = func(s *System) ([]ActorID, error) {
-		r, err := Spawn(s.Root(), relayBehavior, int(s.node))
+		r, err := Spawn(s.Root(), relayBehavior, int(s.node), WithNode(s.node))
 		return []ActorID{r.ID()}, err
 	}
 }
@@ -75,7 +78,7 @@ func TestRemote(t *testing.T) {
 	root := c.sys.Root()
 	far := Ref[hop]{id: c.nodes[3].actors[0]}
 	got := make(chan hop, 10_000)
-	back, err := Spawn(root, sinkBehavior, got)
+	back, err := Spawn(root, sinkBehavior, got, WithNode(1))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +132,7 @@ func TestLocationTransparency(t *testing.T) {
 	root := c.sys.Root()
 	local := make([]Ref[hop], 3)
 	for i := range local {
-		r, err := Spawn(root, relayBehavior, i+1)
+		r, err := Spawn(root, relayBehavior, i+1, WithNode(1))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -186,13 +189,13 @@ func TestClusterView(t *testing.T) {
 			SuspicionMult:  4,
 		},
 	}
-	self, err := cluster.Join(cfg, 1, 1)
-	if err != nil {
+	self := cluster.New(cfg, 1)
+	if err := self.Join(1); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { self.Leave() })
-	peer, err := cluster.Join(cfg, 2, 1)
-	if err != nil {
+	peer := cluster.New(cfg, 2)
+	if err := peer.Join(1); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { peer.Leave() })
