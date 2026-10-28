@@ -1,0 +1,50 @@
+name: mandelbrot
+
+x-node: &node
+  image: goactor-mandelbrot
+  build:
+    context: ../..
+    dockerfile: cmd/mandelbrot/Dockerfile
+  entrypoint:
+    - /mandelbrot
+    - -workers=${WORKERS:-8}
+    - -tiles=${TILES:-256}
+    - -size=${SIZE:-16384}
+    - -max-iter=${MAX_ITER:-10000}
+    - -snapshot-interval=${SNAPSHOT_INTERVAL:-1s}
+    - -out=/out/mandelbrot.png
+  volumes:
+    - ./cluster.yaml:/etc/goactor/cluster.yaml:ro
+    - ./cluster-solo.yaml:/etc/goactor/cluster-solo.yaml:ro
+    - ./out:/out
+    - epochs:/var/lib/goactor
+
+services:
+  node1:
+    <<: *node
+    command: [-config=/etc/goactor/cluster.yaml, -id=1]
+    networks:
+      cluster: { ipv4_address: 172.30.0.11 }
+  node2:
+    <<: *node
+    command: [-config=/etc/goactor/cluster.yaml, -id=2]
+    networks:
+      cluster: { ipv4_address: 172.30.0.12 }
+  node3:
+    <<: *node
+    command: [-config=/etc/goactor/cluster.yaml, -id=3]
+    networks:
+      cluster: { ipv4_address: 172.30.0.13 }
+  solo:
+    <<: *node
+    profiles: [solo]
+    command: [-config=/etc/goactor/cluster-solo.yaml, -id=1]
+
+networks:
+  cluster:
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+volumes:
+  epochs:

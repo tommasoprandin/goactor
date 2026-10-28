@@ -31,3 +31,8 @@ go.work.sum
 .idea/
 .vscode/
 .zed/
+
+# Mandelbrot demo output
+example/mandelbrot/out/
+
+.DS_Store

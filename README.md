@@ -93,11 +93,11 @@ A named constructor, registered at package initialisation and compiled into the 
 
 ```go
 var (
-    WorkerBehavior = goactor.Register("mandelbrot.Worker", func(_ struct{}) goactor.Actor[Tile] {
+    WorkerBehavior = goactor.Register("mandelbrot.Worker", func(_ struct{}) goactor.Actor[WorkerMsg] {
         return &Worker{}
     })
-    CoordinatorBehavior = goactor.Register("mandelbrot.Coordinator", func(p Params) goactor.Actor[TileDone] {
-        return &Coordinator{params: p}
+    CoordinatorBehavior = goactor.Register("mandelbrot.Coordinator", func(p Params) goactor.Actor[CoordMsg] {
+        return &Coordinator{p: p}
     })
 )
 ```
@@ -150,34 +150,48 @@ must be identical on every node.
 ### Defining an actor
 
 ```go
-// The actor internal state
-type Tile struct {
-    Index   int
-    Y0, Y1  int
-    ReplyTo goactor.Ref[TileDone]
+// An actor has one message type. One that receives several kinds of message
+// takes a struct with one field per kind, and acts on the field that is set.
+type WorkerMsg struct {
+    Tile *Tile
+    Ping bool
 }
 
-// Message types
+type Tile struct {
+    Index   int
+    Rect    image.Rectangle
+    Size    int
+    MaxIter int
+    ReplyTo goactor.Ref[CoordMsg]
+}
+
+type CoordMsg struct {
+    Hello *Hello
+    Done  *TileDone
+    Begin bool
+    Tick  bool
+}
+
 type TileDone struct {
     Index  int
     Pixels []byte
-    Worker goactor.Ref[Tile]
+    Worker goactor.Ref[WorkerMsg]
 }
 
 type Worker struct{}
 
 // Lifecycle hooks. This worker holds no resources, so both are empty.
-func (w *Worker) Start(ctx *goactor.ActorContext[Tile]) {}
-func (w *Worker) Stop(ctx *goactor.ActorContext[Tile], err error) {}
+func (w *Worker) Start(ctx *goactor.ActorContext[WorkerMsg]) {}
+func (w *Worker) Stop(ctx *goactor.ActorContext[WorkerMsg], err error) {}
 
 // The actual worker body that takes in
 // its context and the typed message
-func (w *Worker) Receive(ctx *goactor.ActorContext[Tile], t Tile) {
-    t.ReplyTo.Send(TileDone{
-        Index:  t.Index,
-        Pixels: render(t.Y0, t.Y1),
-        Worker: ctx.SelfRef(),
-    })
+func (w *Worker) Receive(ctx *goactor.ActorContext[WorkerMsg], m WorkerMsg) {
+    if m.Tile == nil {
+        return
+    }
+    done := TileDone{Index: m.Tile.Index, Pixels: renderTile(*m.Tile), Worker: ctx.SelfRef()}
+    m.Tile.ReplyTo.Send(CoordMsg{Done: &done})
 }
 ```
 
@@ -263,13 +277,16 @@ func main() {
     }
     defer sys.Shutdown()
 
-    _, created, err := goactor.SpawnNamed(sys.Root(),
-        "coordinator", CoordinatorBehavior, Params{Width: 4096, Height: 4096, Tiles: 256})
+    coordinator, created, err := goactor.SpawnNamed(sys.Root(), "coordinator", CoordinatorBehavior,
+        Params{Size: 4096, Tiles: 256, Workers: 6, MaxIter: 10000, Nodes: cfg.N()})
     if err != nil {
         log.Fatal(err)
     }
     if created {
         log.Print("this call created the coordinator")
+    }
+    if err := coordinator.Send(CoordMsg{Hello: &Hello{Node: *nodeID}}); err != nil {
+        log.Fatal(err)
     }
 
     sig := make(chan os.Signal, 1)
@@ -279,7 +296,8 @@ func main() {
 ```
 
 The coordinator then spawns workers with `Spawn`, which places them round-robin across the alive
-nodes.
+nodes. Nodes do not wait for each other at startup, so an application that wants its actors spread
+across the whole cluster waits for that itself: here, for a `Hello` from every node.
 
 ## Mailboxes and delivery
 
