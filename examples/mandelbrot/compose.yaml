@@ -4,7 +4,7 @@ x-node: &node
   image: goactor-mandelbrot
   build:
     context: ../..
-    dockerfile: cmd/mandelbrot/Dockerfile
+    dockerfile: examples/mandelbrot/Dockerfile
   entrypoint:
     - /mandelbrot
     - -workers=${WORKERS:-8}
@@ -22,16 +22,19 @@ x-node: &node
 services:
   node1:
     <<: *node
+    profiles: [cluster]
     command: [-config=/etc/goactor/cluster.yaml, -id=1]
     networks:
       cluster: { ipv4_address: 172.30.0.11 }
   node2:
     <<: *node
+    profiles: [cluster]
     command: [-config=/etc/goactor/cluster.yaml, -id=2]
     networks:
       cluster: { ipv4_address: 172.30.0.12 }
   node3:
     <<: *node
+    profiles: [cluster]
     command: [-config=/etc/goactor/cluster.yaml, -id=3]
     networks:
       cluster: { ipv4_address: 172.30.0.13 }
