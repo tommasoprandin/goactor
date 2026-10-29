@@ -3,7 +3,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -o /mandelbrot ./cmd/mandelbrot
+RUN CGO_ENABLED=0 go build -trimpath -o /mandelbrot ./examples/mandelbrot
 
 FROM scratch
 COPY --from=build /mandelbrot /mandelbrot
