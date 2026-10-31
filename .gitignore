@@ -36,3 +36,4 @@ go.work.sum
 example/mandelbrot/out/
 
 .DS_Store
+out/
